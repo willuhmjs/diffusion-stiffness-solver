@@ -2,6 +2,8 @@
 
 A Conditional Diffusion Model for solving the ultrasonic inverse problem in tri-layer adhesive structures. This framework maps swept-frequency phase spectra to interfacial stiffness parameters to detect bond degradation.
 
+**Proprietary NASA input data has been redacted and must be supplied for this software to work.**
+
 ## Overview
 
 This project implements a machine learning pipeline to solve the inverse problem for ultrasonic testing (UT) of adhesive bonds. Specifically, it infers the "interfacial stiffness" ($K$) of an Aluminum-Adhesive-Aluminum bond from frequency sweep phase measurements (3-8 MHz).
