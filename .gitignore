@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+
+# Virtual Environments
+venv/
+env/
+.env
+.venv
+.venv/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# System Files
+.DS_Store
+
+# Project Specific - Generated Data
+data/processed/
+
+# Project Specific - Checkpoints
+checkpoints/
+
+# Project Specific - Results and Logs
+# results/
+logs/
+*.log
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Build / Distribution
+build/
+dist/
+*.egg-info/

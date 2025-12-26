@@ -1,0 +1,42 @@
+physics:
+  # Substrate: AA7075 (NRC High Low DCB Parameters)
+  # Z = rho * c = 2700 * 6149 = 16.6023e6
+  z_sub: 16.6023e6
+  c_sub: 6149.0
+  rho_sub: 2700.0
+
+  # Adhesive: FM209 (NRC High Low DCB Parameters)
+  rho_adh: 1290.0
+  c_adh: 2391.0
+  alpha_adh: 1000.0
+  l_bl: 250.0e-6     # 0.00025 m = 250 um
+  # l_bl: 240.0e-6     # 0.00024 m = 240 um
+
+  # Frequency Sweep (Calculated for Quarter-Wave Resonance at 240um thickness)
+  # f_res_quarter = c / (4*L) = 2391 / (4 * 240e-6) = 2.49 MHz
+  # We center the sweep around this resonance for maximum sensitivity.
+  freq_min: 3.0e6     # Matches start of your CSV
+  freq_max: 8.0e6     # Matches end of your CSV (and includes 7.5 MHz resonance)
+  num_points: 2001
+
+  k_min_log: 11.0     # 10^11 (Allows AI to learn weak bonds)
+  k_max_log: 16.0
+  k_max_phys: 1.0e16 # Maximum physically distinguishable stiffness
+
+data_generation:
+  dataset_size: 5000
+  noise:
+    enable: true
+    sigma_phase: 0.2   # Gaussian noise std dev (degrees)
+    drift_factor: 1.0  # Magnitude of baseline drift
+
+training:
+  batch_size: 128
+  lr: 2.0e-4
+  epochs: 3000
+  timesteps: 500
+  patience: 300  # For Early Stopping if implemented
+
+paths:
+  data_path: "data/processed/training_data.pt"
+  model_path: "checkpoints/model_final.pt"
