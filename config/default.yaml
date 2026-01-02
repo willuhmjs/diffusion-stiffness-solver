@@ -1,0 +1,39 @@
+physics:
+  # Substrate: Generic Material A (Aluminum 6061 Approximation)
+  # Z = rho * c
+  z_sub: 17.0e6
+  c_sub: 6300.0
+  rho_sub: 2700.0
+
+  # Adhesive: Generic Material B (Epoxy Approximation)
+  rho_adh: 1200.0
+  c_adh: 2400.0
+  alpha_adh: 1000.0
+  l_bl: 200.0e-6     # Nominal thickness 200 um
+
+  # Frequency Sweep
+  freq_min: 3.0e6
+  freq_max: 8.0e6
+  num_points: 2001
+
+  k_min_log: 11.0     # 10^11
+  k_max_log: 16.0
+  k_max_phys: 1.0e16
+
+data_generation:
+  dataset_size: 5000
+  noise:
+    enable: true
+    sigma_phase: 0.2
+    drift_factor: 1.0
+
+training:
+  batch_size: 128
+  lr: 2.0e-4
+  epochs: 3000
+  timesteps: 500
+  patience: 300
+
+paths:
+  data_path: "data/processed/training_data.pt"
+  model_path: "checkpoints/model_final.pt"
