@@ -61,31 +61,6 @@ def process_experimental_data(freqs, phase_diff, stats=None, target_freqs=None):
         if isinstance(phase_mean, torch.Tensor): phase_mean = phase_mean.item()
         if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
             
-        # Global Normalization
-        # Using (x - mean) / global_std for uncentered data, but here data is centered??
-        # WAIT: The generate.py subtracts global mean from raw data.
-        # Here we subtracted local mean (line 53).
-        # To match training distribution, we must use: (curve - global_mean) / global_std
-        # BUT: The model is trained on mean-centered curves if we do curve - mean in generate.py?
-        # Let's check generate.py again.
-        # generate.py: X_final = (X_deg - phase_mean) / (phase_std + 1e-8)
-        # It normalizes the RAW values globally.
-        # So we should NOT subtract local mean here if we want to follow global norm exactly.
-        # However, physics says phase offset is arbitrary.
-        # If we remove local mean, we are effectively setting the DC component to 0.
-        # If the training data includes DC offsets (it does, phase_mean is likely non-zero),
-        # but the physics model returns absolute phase.
-        # Experimental data has ARBITRARY offset.
-        # So we MUST center the experimental curve (remove its arbitrary DC).
-        # To match this, the training data should effectively be "centered" before global norm?
-        # Or, we center here, then apply global scaling.
-        # The key is AMPLITUDE scaling.
-        # Correct approach for arbitrary offset data:
-        # 1. Center the curve (remove DC).
-        # 2. Scale by GLOBAL std dev (preserve relative amplitude).
-        
-        # So: curve_norm = curve_centered / (phase_std)
-        # This assumes the training data was also roughly centered or that phase_std captures AC magnitude.
         
         curve_norm = curve_centered / (phase_std + 1e-8)
         
