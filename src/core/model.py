@@ -39,6 +39,8 @@ class ConditionalDiffusionModel(nn.Module):
         
         # Handle case where curve was reshaped for CNN (legacy compatibility)
         if condition_curve.dim() == 3:
+            assert condition_curve.size(1) == 1, \
+                f"Expected middle dimension to be 1, got {condition_curve.size(1)}"
             condition_curve = condition_curve.squeeze(1)
             
         # Encode the raw curve directly
