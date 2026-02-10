@@ -16,6 +16,8 @@ def tri_layer_model_torch(
     return_amp=False,
     alpha=None,
     c_adh=None,
+    z_sub=None,
+    l_bl=None,
 ):
     """
     Asymmetric Tri-Layer UT model using TMM.
@@ -43,8 +45,15 @@ def tri_layer_model_torch(
     batch_size = K_top.shape[0]
     num_freqs = frequencies.shape[0]
 
-    Z_sub = float(config.Z_SUB)
-    L_bl = float(config.L_BL)
+    if z_sub is None:
+        Z_sub = float(config.Z_SUB)
+    else:
+        Z_sub = float(z_sub)
+        
+    if l_bl is None:
+        L_bl = float(config.L_BL)
+    else:
+        L_bl = float(l_bl)
 
     # -------------------------
     # Adhesive properties
@@ -140,7 +149,7 @@ def add_noise(phase_curves, frequencies):
     batch_size, num_points = phase_curves.shape
     
     # 1. Gaussian Noise (High Frequency)
-    sigma = noise_cfg.get('sigma_phase', 0.5)
+    sigma = noise_cfg.get('sigma_phase', 0.1)
     gaussian_noise = torch.randn_like(phase_curves) * sigma
     
     # 2. Baseline Drift (Low Frequency)
@@ -171,10 +180,10 @@ def generate_dataset(n_samples=1000, asymmetric=True):
     else:
         K_bottom = K_top
 
-    # Disbonds (15%)
-    n_disbonds = int(0.15 * n_samples)
+    # Disbonds (25%)
+    n_disbonds = int(0.25 * n_samples)
     if n_disbonds > 0:
-        log_k_weak = torch.FloatTensor(n_disbonds, 1).uniform_(6.0, 11.0)
+        log_k_weak = torch.FloatTensor(n_disbonds, 1).uniform_(8.0, 13.0)
         K_top[:n_disbonds] = 10 ** log_k_weak
         K_bottom[:n_disbonds] = 10 ** log_k_weak
 

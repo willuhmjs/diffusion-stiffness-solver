@@ -15,11 +15,27 @@ def evaluate_parameter_recovery():
     device = config.DEVICE
     
     # 1. Load Data
-    val_path = "data/processed/val.pt"
+    # Ensure this matches generate.py output
+    val_path = "data/processed/training_data_val.pt"
     if not os.path.exists(val_path):
-        print(f"Error: {val_path} not found.")
-        return
+        # Fallback to old name if new one doesn't exist
+        fallback = "data/processed/val.pt"
+        if os.path.exists(fallback):
+             val_path = fallback
+        else:
+            # Last resort check for training_data.pt (might contain everything)
+            fallback_full = "data/processed/training_data.pt"
+            if os.path.exists(fallback_full):
+                # Try loading full data and extracting validation part if possible,
+                # or just use it but warn user.
+                # Ideally generate.py creates split files.
+                print(f"Warning: {val_path} not found. Trying full dataset {fallback_full}.")
+                val_path = fallback_full
+            else:
+                print(f"Error: Validation data not found at {val_path} or {fallback}.")
+                return
         
+    print(f"Loading validation data from: {val_path}")
     val_data = torch.load(val_path, map_location=device, weights_only=False)
     
     # Unpack Data
@@ -94,6 +110,15 @@ def evaluate_parameter_recovery():
     true_k = 10**true_log
     pred_k = 10**pred_log
     
+    # Filter out negative or zero values if any (though 10**x > 0, this protects against other issues or future changes)
+    valid_mask = (true_k > 0) & (pred_k > 0)
+    if not np.all(valid_mask):
+        print(f"Excluding {np.sum(~valid_mask)} samples with non-positive stiffness values.")
+        true_k = true_k[valid_mask]
+        pred_k = pred_k[valid_mask]
+        true_log = true_log[valid_mask]
+        pred_log = pred_log[valid_mask]
+
     # 5. Metrics
     # RMSE on Log Scale is often more meaningful for stiffness spanning orders of magnitude
     mse_log = np.mean((true_log - pred_log)**2)
@@ -121,15 +146,17 @@ def evaluate_parameter_recovery():
     plt.scatter(true_k, pred_k, alpha=0.5, s=10, c='blue', label='Predictions')
     
     # Perfect Line
-    min_val = min(true_k.min(), pred_k.min())
-    max_val = max(true_k.max(), pred_k.max())
+    min_val = 1e10
+    max_val = 1e18
     plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Recovery')
     
     plt.xscale('log')
     plt.yscale('log')
-    plt.xlabel('True Stiffness (N/m^3)')
+    plt.xlim(1e10, 1e18)
+    plt.ylim(1e10, 1e18)
+    plt.xlabel('Simulated Stiffness (N/m^3)')
     plt.ylabel('Predicted Stiffness (N/m^3)')
-    plt.title(f'Parameter Recovery\nRMSE(log): {rmse_log:.3f}')
+    plt.title(f'Parameter Recovery\nRMSE(log): {rmse_log:.3f}\nReference: Validation Set')
     plt.legend()
     plt.grid(True, which="both", ls="-", alpha=0.2)
     

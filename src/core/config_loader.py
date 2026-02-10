@@ -47,5 +47,6 @@ class ConfigLoader:
     def paths(self):
         return self._config.get('paths', {})
 
+
 # Singleton Accessor
 cfg = ConfigLoader()

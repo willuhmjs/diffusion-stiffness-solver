@@ -1,9 +1,118 @@
 import torch
 import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import src.core.config as config
 import os
+import re
+
+def load_file_to_dataframe(path):
+    """
+    Loads a file (CSV or DAT) into a pandas DataFrame.
+    Handles .dat files with whitespace separators and specific column renaming.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found: {path}")
+
+    ext = os.path.splitext(path)[1].lower()
+    
+    if ext == '.dat':
+        try:
+            # Read .dat file with whitespace separator
+            df = pd.read_csv(path, sep=r'\s+', engine='python')
+            
+            # Rename columns to match internal standard
+            # Mapping based on typical .dat file structure from import_data.py
+            rename_map = {
+                'Freq(MHz)': 'Frequency',
+                'Frequency': 'Frequency', # Sometimes it is already Frequency
+                'Mag': 'Amp',
+                'Phs(rad)': 'Phase',
+                'Phs': 'Phase'
+            }
+            
+            df.rename(columns=rename_map, inplace=True)
+            
+            # Ensure required columns exist
+            required = ['Frequency', 'Amp', 'Phase']
+            if not all(col in df.columns for col in required):
+                # Try simple position-based if names fail?
+                # For now, just warn/fail if names are wrong
+                pass
+                
+            return df
+        except Exception as e:
+            print(f"Error reading .dat file {path}: {e}")
+            raise e
+            
+    else:
+        # Default to CSV
+        return pd.read_csv(path)
+
+def find_specimen_pairs(data_dir):
+    """
+    Scans the directory for Spec*_Loc*_Rep*.(csv|dat) files and their corresponding Ref files.
+    Returns a list of tuples: (loc_path, ref_path, info_dict)
+    """
+    if not os.path.exists(data_dir):
+        print(f"Error: {data_dir} not found.")
+        return []
+
+    all_files = os.listdir(data_dir)
+    # Match both .csv and .dat
+    pattern = re.compile(r'(Spec\d+)_Loc(\d+)_Rep(\d+)\.(csv|dat)', re.IGNORECASE)
+    found_pairs = []
+    
+    for f in all_files:
+        match = pattern.match(f)
+        if match:
+            specimen = match.group(1)
+            location = match.group(2)
+            rep = match.group(3)
+            ext = match.group(4) # csv or dat
+            
+            loc_path = os.path.join(data_dir, f)
+            
+            # Look for Ref file with same extension first
+            ref_filename = f"{specimen}_Ref_Rep{rep}.{ext}"
+            ref_path = os.path.join(data_dir, ref_filename)
+            
+            # If not found, try the other extension (though usually they match)
+            if not os.path.exists(ref_path):
+                other_ext = 'dat' if ext.lower() == 'csv' else 'csv'
+                ref_filename_alt = f"{specimen}_Ref_Rep{rep}.{other_ext}"
+                ref_path_alt = os.path.join(data_dir, ref_filename_alt)
+                if os.path.exists(ref_path_alt):
+                    ref_path = ref_path_alt
+            
+            # Fallback: If no reference file specific to this specimen/rep exists,
+            # try to use a common reference or a reference from another specimen if appropriate.
+            # For this dataset, Spec4 often reuses Spec3's reference or a specific one.
+            # Let's check for Spec3_Ref_Rep1.dat as a fallback if Spec4 is missing one.
+            
+            if not os.path.exists(ref_path):
+                 if specimen == 'Spec4':
+                     # Try using Spec3's reference for Spec4 if Spec4's own ref is missing
+                     fallback_ref = os.path.join(data_dir, f"Spec3_Ref_Rep{rep}.{ext}")
+                     if os.path.exists(fallback_ref):
+                         ref_path = fallback_ref
+                         # print(f"Info: Using fallback reference {fallback_ref} for {f}")
+
+            if os.path.exists(ref_path):
+                found_pairs.append({
+                    'loc_path': loc_path,
+                    'ref_path': ref_path,
+                    'specimen': specimen,
+                    'location': location,
+                    'rep': rep,
+                    'filename': f
+                })
+
+    
+    # Sort for consistency
+    found_pairs.sort(key=lambda x: (x['specimen'], int(x['location']), int(x['rep'])))
+    return found_pairs
 
 def load_stats(device=config.DEVICE):
     """

@@ -39,27 +39,29 @@ def get_theoretical_curves():
         phase_unwrapped = np.unwrap(np.deg2rad(raw_phase))
         phase_deg = np.rad2deg(phase_unwrapped)
         
-        # Zero-Center (Global Normalization - Global Mean)
-        # Use Global Mean from stats instead of Instance Mean
-        if 'phase_mean' in stats:
-            phase_mean = stats['phase_mean']
-            if isinstance(phase_mean, torch.Tensor): phase_mean = phase_mean.item()
-            phase_centered = phase_deg - phase_mean
-        else:
-            # Fallback (Should not happen if stats loaded correctly)
-            print("Warning: phase_mean not in stats. Using instance mean.")
-            phase_mean = np.mean(phase_deg)
-            phase_centered = phase_deg - phase_mean
+        # Normalize: MUST MATCH src/tasks/generate.py EXACTLY
+        # generate.py uses: (X_deg - phase_mean_global) / phase_std_global
         
-        # Normalize for Model
+        # 1. Center (Global Mean)
+        # Ensure stats are loaded correctly
+        if stats and 'phase_mean' in stats:
+            phase_mean_global = stats['phase_mean']
+            if isinstance(phase_mean_global, torch.Tensor): phase_mean_global = phase_mean_global.item()
+            # Use global mean, NOT instance mean
+            phase_centered = phase_deg - phase_mean_global
+        else:
+            print("Warning: 'phase_mean' not found in stats. Using instance mean (incorrect for inference).")
+            phase_centered = phase_deg - np.mean(phase_deg)
+
+        # 2. Normalize (Global Std)
         phase_norm = torch.tensor(phase_centered, dtype=torch.float32).to(config.DEVICE)
         
-        # Global Normalization Logic
-        if 'phase_std' in stats:
+        if stats and 'phase_std' in stats:
             phase_std = stats['phase_std']
             if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
             phase_norm = phase_norm / (phase_std + 1e-8)
         else:
+             print("Warning: 'phase_std' not found in stats. Using instance std (incorrect for inference).")
              phase_norm = phase_norm / (np.std(phase_centered) + 1e-8)
         
         # Store
@@ -112,7 +114,7 @@ def run_inference(results, stats):
         avg_pred = np.mean(preds_k)
         
         results[label]['k_pred'] = avg_pred
-        print(f"  -> {label}: True K={data['k_true']:.2e} | Predicted K={avg_pred:.2e}")
+        print(f"  -> {label}: Simulated K={data['k_true']:.2e} | Predicted K={avg_pred:.2e}")
 
     return results, model # Return model to reuse
 
@@ -135,7 +137,7 @@ def check_consistency(results):
         log_error = np.abs(np.log10(k_true) - np.log10(k_pred))
         
         print(f"  [{label}]")
-        print(f"    - True K:       {k_true:.2e}")
+        print(f"    - Simulated K:  {k_true:.2e}")
         print(f"    - Predicted K:  {k_pred:.2e}")
         print(f"    - Self-Consistency Error (Log10 diff): {log_error:.4f}")
         print(f"    - Peak-to-Peak Amplitude: {p2p:.4f} deg")
@@ -191,132 +193,103 @@ def analyze_residuals(results):
     elif 0.2 < ratio < 0.3:
         print("      -> NOTE: Thickness is near Quarter-Wavelength (0.25).")
 
-def verify_jefferson_curve(model, stats, device):
+def evaluate_noise_sensitivity(model, stats, device):
     """
-    Replicates the Jefferson Lab cure curve tracking test using the core physics engine.
+    Evaluates how the model's stiffness prediction uncertainty varies with input noise.
     """
-    print("\n--- 5. JEFFERSON LAB REPLICATION TEST ---")
+    print("\n--- 5. NOISE SENSITIVITY ANALYSIS ---")
     
-    # 1. Define the "True" evolution of parameters (Hypothetical Cure Curve)
-    # Time points (arbitrary units, e.g., % cure)
-    cure_stages = np.linspace(0, 100, 10)
+    # Parameters
+    k_true = 1.0e14  # Fixed Ground Truth Stiffness
+    noise_levels = np.linspace(0.0, 0.5, 11)  # Sigma levels
+    num_samples = 20  # Samples per noise level for distribution
     
-    # True K evolution: 10^14 -> 10^17 (High stiffness regime)
-    true_K_values = np.logspace(14, 17, len(cure_stages))
-    
-    # Velocity evolution: 2150 -> 2630 (Approx range around nominal 2391)
-    # Velocity increases with cure
-    velocities = np.linspace(2150, 2630, len(cure_stages))
+    print(f"  -> Target Stiffness: {k_true:.2e} N/m^3")
+    print(f"  -> Noise Levels: {noise_levels}")
 
-    predicted_K_values = []
-    
-    # Get Frequencies
+    # Generate Clean Curve
     freqs = get_frequencies().to(device)
+    k_tensor = torch.tensor([k_true]).float().to(device)
     
-    print(f"{'Stage':<10} | {'True K (N/m^3)':<15} | {'Pred K (N/m^3)':<15} | {'Velocity (m/s)':<15}")
-    print("-" * 65)
+    # Physics Engine
+    raw_phase = tri_layer_model_torch(freqs, k_tensor).detach().cpu().numpy().flatten()
+    
+    # Pre-process (Unwrap)
+    phase_unwrapped = np.unwrap(np.deg2rad(raw_phase))
+    phase_deg_clean = np.rad2deg(phase_unwrapped)
+    
+    # Stats for normalization
+    phase_mean = stats['phase_mean']
+    phase_std = stats['phase_std']
+    if isinstance(phase_mean, torch.Tensor): phase_mean = phase_mean.item()
+    if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
 
+    # Results storage
+    means = []
+    cis_lower = []
+    cis_upper = []
+    
     model.eval()
     
-    with torch.no_grad():
-        for i, k_true in enumerate(true_K_values):
-            vel = velocities[i]
+    for sigma in noise_levels:
+        preds_k = []
+        
+        # Run multiple samples to get distribution
+        for _ in range(num_samples):
+            # Add Noise
+            noise = np.random.normal(0, sigma, phase_deg_clean.shape)
+            phase_noisy = phase_deg_clean + noise
             
-            # Physics Engine Execution using tri_layer_model_torch
-            # We assume symmetric boundary conditions (K_top = K_bottom = k_true)
-            # And we pass the specific velocity for this cure stage
-            k_tensor = torch.tensor([k_true]).float().to(device)
-            vel_tensor = torch.tensor([vel]).float().to(device)
-            
-            # tri_layer_model_torch returns phase in degrees
-            raw_phase = tri_layer_model_torch(
-                freqs, 
-                K_top=k_tensor, 
-                K_bottom=k_tensor, # Symmetric
-                c_adh=vel_tensor
-            )
-            
-            # Process curve (Unwrap and Normalize)
-            # Need to move to CPU for numpy unwrap if needed, but if it's already continuous we might be ok.
-            # tri_layer_model_torch output is degrees. 
-            # Ideally we unwrap radians.
-            raw_phase_np = raw_phase.cpu().numpy().flatten()
-            phase_rad = np.deg2rad(raw_phase_np)
-            phase_unwrapped = np.unwrap(phase_rad)
-            phase_deg = np.rad2deg(phase_unwrapped)
-            
-            # Center and Normalize
-            phase_mean = stats['phase_mean']
-            if isinstance(phase_mean, torch.Tensor): phase_mean = phase_mean.item()
-            phase_std = stats['phase_std']
-            if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
-            
-            phase_centered = phase_deg - phase_mean
+            # Normalize
+            phase_centered = phase_noisy - phase_mean
             phase_norm = phase_centered / (phase_std + 1e-8)
             
-            # Prepare for model [1, Points]
+            # To Tensor [1, Points]
             condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).unsqueeze(0).to(device)
             
-            # Predict
-            # Sample returns [Batch, 1]
-            # Ensure correct input dimension: sample expects [Batch, Points]
-            # phase_norm is a numpy array here from line 255 (implicit broadcast)?
-            # Wait, phase_norm calculation above involves numpy scalar/arrays.
-            # Convert to tensor properly.
-            
-            condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).unsqueeze(0).to(device) # [1, Points]
-            
-            pred_log_k_norm = sample(model, condition_tensor, num_samples=1, device=device)
+            # Inference
+            with torch.no_grad():
+                 pred_log_k_norm = sample(model, condition_tensor, num_samples=1, device=device)
             
             # Inverse Transform
             pred_k = utils.inverse_transform_k(pred_log_k_norm, stats)
+            preds_k.append(pred_k)
             
-            predicted_K_values.append(pred_k)
+        # Calculate Stats
+        preds_k = np.array(preds_k)
+        mean_k = np.mean(preds_k)
+        
+        # 95% CI
+        lower = np.percentile(preds_k, 2.5)
+        upper = np.percentile(preds_k, 97.5)
+        
+        means.append(mean_k)
+        cis_lower.append(lower)
+        cis_upper.append(upper)
+        
+        print(f"  -> Sigma {sigma:.2f}: Mean K={mean_k:.2e} [{lower:.2e}, {upper:.2e}]")
 
-            print(f"{cure_stages[i]:<10.0f} | {k_true:<15.2e} | {pred_k:<15.2e} | {vel:<15.1f}")
-
-    # Plot Comparison
+    # Plot
     plt.figure(figsize=(10, 6))
-    # plt.loglog(cure_stages, true_K_values, 'bo-', label='True Stiffness Evolution')
-    plt.loglog(cure_stages, predicted_K_values, 'r--x', label='Predicted Stiffness')
-    plt.xlabel('Cure Progress (%)')
-    plt.ylabel('Interfacial Stiffness K (N/m^3)')
-    plt.title('Stiffness Tracking Validation (Simulated)')
+    
+    # Ground Truth Line
+    plt.axhline(y=k_true, color='g', linestyle='-', label=f'Ground Truth (K={k_true:.1e})')
+    
+    # Predictions
+    plt.plot(noise_levels, means, 'b-o', label='Mean Prediction')
+    plt.fill_between(noise_levels, cis_lower, cis_upper, color='b', alpha=0.2, label='95% Confidence Interval')
+    
+    plt.yscale('log')
+    plt.ylim(1e13, 1e15)
+    plt.xlabel('Input Noise Level (Sigma)')
+    plt.ylabel('Predicted Stiffness (N/m^3)')
+    plt.title(f'Noise Sensitivity Analysis\nTarget K={k_true:.1e}')
     plt.legend()
-    plt.grid(True, which="both", ls="-")
-    plt.savefig('results/verify_jefferson_stiffness.png')
-    print("Stiffness plot saved to results/verify_jefferson_stiffness.png")
+    plt.grid(True, which="both", ls="-", alpha=0.5)
     
-    # Resonance Shift Check
-    print("\n--- RESONANCE SHIFT CHECK ---")
-    k_weak = 1e15
-    k_strong = 1e16
-    vel_nominal = config.C_ADH # Use nominal from config
-    
-    k_weak_t = torch.tensor([k_weak]).float().to(device)
-    k_strong_t = torch.tensor([k_strong]).float().to(device)
-    
-    # Use standard tri_layer_model
-    # The error "The expanded size of the tensor (-1) isn't allowed" often comes from shape mismatch in broadcasting
-    # tri_layer_model_torch expects K_top to have batch dim [Batch, 1] if 1D, or [Batch] if we fix it.
-    # Let's ensure they are [1, 1] for a single sample.
-    
-    if k_weak_t.dim() == 0: k_weak_t = k_weak_t.unsqueeze(0)
-    if k_strong_t.dim() == 0: k_strong_t = k_strong_t.unsqueeze(0)
-    
-    phase_weak = tri_layer_model_torch(freqs, k_weak_t, k_weak_t).detach().cpu().numpy().flatten()
-    phase_strong = tri_layer_model_torch(freqs, k_strong_t, k_strong_t).detach().cpu().numpy().flatten()
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(freqs.cpu().numpy() / 1e6, phase_weak, 'b-', label=f'Weak Bond (K={k_weak:.1e})')
-    plt.plot(freqs.cpu().numpy() / 1e6, phase_strong, 'r--', label=f'Strong Bond (K={k_strong:.1e})')
-    plt.xlabel('Frequency (MHz)')
-    plt.ylabel('Phase (deg)')
-    plt.title('Resonance Shift Check')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig('results/verify_jefferson_resonance.png')
-    print("Resonance plot saved to results/verify_jefferson_resonance.png")
+    out_path = 'results/noise_sensitivity.png'
+    plt.savefig(out_path)
+    print(f"Sensitivity plot saved to {out_path}")
 
 
 def verify_task():
@@ -333,8 +306,8 @@ def verify_task():
     # 4. Analyze
     analyze_residuals(results)
     
-    # 5. Jefferson Test
-    verify_jefferson_curve(model, stats, config.DEVICE)
+    # 5. Noise Sensitivity
+    evaluate_noise_sensitivity(model, stats, config.DEVICE)
 
 if __name__ == "__main__":
     verify_task()

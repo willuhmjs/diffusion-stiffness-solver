@@ -24,6 +24,7 @@ env/
 # Project Specific - Generated Data
 data/processed/
 data/raw/
+data/metadata
 
 # Project Specific - Checkpoints
 checkpoints/

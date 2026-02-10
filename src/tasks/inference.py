@@ -22,19 +22,49 @@ def infer_task(loc_path=None, ref_path=None):
         return
 
     # 2. Load Data (Default or Custom)
+    ref_name = "Unknown"
     if loc_path and ref_path:
         print(f"\n--- INVERSE MAPPING: {os.path.basename(loc_path)} ---")
         try:
-            df_loc = pd.read_csv(loc_path)
-            df_ref = pd.read_csv(ref_path)
+            df_loc = utils.load_file_to_dataframe(loc_path)
+            df_ref = utils.load_file_to_dataframe(ref_path)
+            ref_name = os.path.basename(ref_path)
         except Exception as e:
-            print(f"Error loading CSVs: {e}")
+            print(f"Error loading Files: {e}")
             return
     else:
         print("\n--- INVERSE MAPPING: Default Spec4 ---")
         try:
-            df_loc = pd.read_csv('data/raw/Spec4_Loc3_Rep1.csv')
-            df_ref = pd.read_csv('data/raw/Spec4_Ref_Rep1.csv')
+            # Check for default files, preferring CSV but falling back if needed (though utility handles extensions, we hardcode paths here)
+            # Just use the existing default path string, utils.load_file_to_dataframe handles the loading.
+            # However, if those specific files don't exist, we might want to be robust.
+            # For now, keeping original default paths but using the new loader.
+            # Update: Changed to .dat as that is what exists in the data directory
+            # Also added fallback for Ref file since Spec4_Ref_Rep1.dat is missing
+            try:
+                df_loc = utils.load_file_to_dataframe('data/raw/Spec4_Loc3_Rep1.dat')
+            except:
+                try:
+                    df_loc = utils.load_file_to_dataframe('data/raw/Spec4_Loc3_Rep1.csv')
+                except:
+                     # Fallback if specific file missing - pick first available matching pattern if possible,
+                     # or error gracefully.
+                     print("Error: Default Spec4_Loc3_Rep1 file not found (checked .dat and .csv).")
+                     return
+
+            try:
+                df_ref = utils.load_file_to_dataframe('data/raw/Spec4_Ref_Rep1.dat')
+                ref_name = "Spec4_Ref_Rep1.dat"
+            except:
+                # Fallback to Spec3 Ref if Spec4 Ref is missing
+                print("Warning: Spec4_Ref_Rep1.dat not found, trying Spec3_Ref_Rep1.dat as fallback.")
+                try:
+                    df_ref = utils.load_file_to_dataframe('data/raw/Spec3_Ref_Rep1.dat')
+                    ref_name = "Spec3_Ref_Rep1.dat"
+                except:
+                    print("Error: No suitable Reference file found for default inference.")
+                    return
+
         except Exception as e:
             print(f"Error loading default CSVs: {e}")
             return
@@ -118,16 +148,16 @@ def infer_task(loc_path=None, ref_path=None):
     if loc_path:
         filename = os.path.basename(loc_path)
     else:
-        filename = "default_spec4"
+        filename = "default_inference"
         
     save_path = f"results/fit_{filename}.png"
-    verify_curve(mean_k, target_freqs, curve_centered, save_path)
+    verify_curve(mean_k, target_freqs, curve_centered, save_path, ref_name)
 
-def verify_curve(k_val, freqs, real_curve_centered, save_path):
+def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown", k_ref=None):
     k_tensor = torch.tensor([k_val]).float()
     f_tensor = torch.tensor(freqs).float()
     
-    # Physics Sim
+    # Physics Sim (AI Pred)
     sim_phase = tri_layer_model_torch(f_tensor, k_tensor).detach().numpy().flatten()
     sim_phase = np.rad2deg(np.unwrap(np.deg2rad(sim_phase)))
     sim_phase_centered = sim_phase - np.mean(sim_phase)
@@ -139,9 +169,26 @@ def verify_curve(k_val, freqs, real_curve_centered, save_path):
     sim_phase_scaled = sim_phase_centered * scaling_factor
 
     plt.figure(figsize=(10,6))
-    # plt.plot(freqs/1e6, real_curve_centered, 'b-', label='Real Data')
+    plt.plot(freqs/1e6, real_curve_centered, 'b-', label='Real Data')
     plt.plot(freqs/1e6, sim_phase_scaled, 'r--', label=f'AI Pred (K={k_val:.1e}) [Scaled]')
-    plt.title(f"Shape Verification (Amplitude Scaled for Visual)")
+
+    # Reference Sim (Derived from Fracture Energy)
+    if k_ref is not None:
+        k_ref_tensor = torch.tensor([k_ref]).float()
+        ref_phase = tri_layer_model_torch(f_tensor, k_ref_tensor).detach().numpy().flatten()
+        ref_phase = np.rad2deg(np.unwrap(np.deg2rad(ref_phase)))
+        ref_phase_centered = ref_phase - np.mean(ref_phase)
+        
+        # Scale Reference using the SAME factor as Prediction (or its own)?
+        # Ideally, we want to compare shapes. Let's scale it to match Real Amplitude too.
+        # This makes visual comparison of *shape* valid.
+        ref_scaling_factor = (np.max(real_curve_centered) - np.min(real_curve_centered)) / \
+                             (np.max(ref_phase_centered) - np.min(ref_phase_centered))
+        ref_phase_scaled = ref_phase_centered * ref_scaling_factor
+        
+        plt.plot(freqs/1e6, ref_phase_scaled, 'g-.', label=f'Ref Trend (K={k_ref:.1e}) [Scaled]')
+
+    plt.title(f"Shape Verification (Amplitude Scaled for Visual)\nReference: {ref_name}")
     plt.xlabel("Freq (MHz)")
     plt.ylabel("Phase Deviation")
     plt.legend()

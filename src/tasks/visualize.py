@@ -11,17 +11,25 @@ def visualize_training():
     # Read CSV
     try:
         df = pd.read_csv(log_path)
+        # Check if header exists
+        if 'epoch' not in df.columns:
+            print("Warning: CSV header missing. Reloading with manual column names.")
+            df = pd.read_csv(log_path, header=None, names=['epoch', 'train_loss', 'val_loss', 'lr'])
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return
 
     # Plot Loss
     plt.figure(figsize=(10, 6))
-    plt.plot(df['epoch'], df['train_loss'], label='Train Loss')
+    if 'epoch' in df.columns and 'train_loss' in df.columns:
+        plt.plot(df['epoch'], df['train_loss'], label='Train Loss')
+    else:
+        print("Error: Could not determine columns for plotting.")
+        return
     # plt.plot(df['epoch'], df['val_loss'], label='Validation Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss (MSE)')
-    plt.title('Training Loss')
+    plt.title('Training Loss\nData Source: results/training_log.csv')
     plt.legend()
     plt.grid(True)
     

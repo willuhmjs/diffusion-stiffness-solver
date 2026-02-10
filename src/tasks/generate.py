@@ -73,11 +73,10 @@ def generate_data_task():
     # 7. Save
     os.makedirs("data/processed", exist_ok=True)
     
-    train_path = "data/processed/train.pt"
-    val_path = "data/processed/val.pt"
-    data_path = config.DATA_PATH # Save the full dataset stats too for utils.load_stats to find
-    
-    # Keeping original full save for backward compatibility if needed, or remove it?
+    data_path = config.DATA_PATH
+    base, ext = os.path.splitext(data_path)
+    train_path = f"{base}_train{ext}"
+    val_path = f"{base}_val{ext}"
     # Task says "split the generated data". We'll save train.pt and val.pt.
     # We can also keep training_data.pt if config relies on it, but config likely points to one file.
     # We'll update train.py to look for these.
