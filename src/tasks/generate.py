@@ -22,19 +22,22 @@ def generate_data_task():
     # 3. Log-Transform Stiffness
     Y_log = torch.log10(Y_raw)
 
-    # 4. GLOBAL STANDARDIZATION (Replaces Instance Norm)
-    # We calculate Mean and Std across the ENTIRE dataset to preserve relative amplitudes.
-    # This ensures weak bonds (low amplitude) look different from strong bonds (high amplitude).
+    # 4. GLOBAL STANDARDIZATION
+    # First: center each curve by removing its mean (removes absolute phase offset).
+    # This matches how experimental data is processed (phase difference has arbitrary offset).
+    # The model learns from the SHAPE of the phase curve, not the absolute level.
+    curve_means = X_deg.mean(dim=1, keepdim=True)
+    X_centered = X_deg - curve_means
     
-    # Calculate Global Stats
-    phase_mean = X_deg.mean().item()
-    phase_std = X_deg.std().item()
+    # Then: compute global stats on centered curves
+    phase_mean = X_centered.mean().item()  # Should be ~0
+    phase_std = X_centered.std().item()
     
     k_mean = Y_log.mean().item()
     k_std = Y_log.std().item()
     
     # Apply Normalization
-    X_final = (X_deg - phase_mean) / (phase_std + 1e-8)
+    X_final = (X_centered - phase_mean) / (phase_std + 1e-8)
     Y_final = (Y_log - k_mean) / (k_std + 1e-8)
 
     # 5. Save Statistics for Inference

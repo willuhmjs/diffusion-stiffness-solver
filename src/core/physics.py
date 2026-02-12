@@ -52,6 +52,10 @@ def tri_layer_model_torch(
         
     if l_bl is None:
         L_bl = float(config.L_BL)
+    elif isinstance(l_bl, torch.Tensor):
+        L_bl = l_bl
+        if L_bl.dim() == 1:
+            L_bl = L_bl.unsqueeze(1)
     else:
         L_bl = float(l_bl)
 
@@ -195,16 +199,42 @@ def generate_dataset(n_samples=1000, asymmetric=True):
         config.C_ADH * 0.9, config.C_ADH * 1.1
     )
 
+    # Vary bondline thickness to match real specimen range (~230-290 µm)
+    l_bl = torch.FloatTensor(n_samples, 1).uniform_(
+        config.L_BL * 0.85, config.L_BL * 1.15
+    )
+
     freqs = get_frequencies()
 
-    phase = tri_layer_model_torch(
+    # --- Compute phase for sample (location measurement) ---
+    phase_loc = tri_layer_model_torch(
         freqs,
         K_top,
         K_bottom=K_bottom,
         alpha=alpha,
         c_adh=c_adh,
+        l_bl=l_bl,
     )
 
-    phase_noisy = add_noise(phase, freqs)
+    # --- Compute phase for perfect-bond reference ---
+    # Experiments measure phase_diff = phase(location) - phase(reference).
+    # The reference is a well-bonded area on the same specimen,
+    # so it shares the same thickness and adhesive properties but has high K.
+    K_ref = torch.full_like(K_top, 1e16)  # Perfect bond
+    phase_ref = tri_layer_model_torch(
+        freqs,
+        K_ref,
+        K_bottom=K_ref,
+        alpha=alpha,
+        c_adh=c_adh,
+        l_bl=l_bl,
+    )
+
+    # Training signal = phase difference (ref - loc)
+    # Sign convention: instruments record phase with opposite sign to TMM,
+    # so sim(ref - loc) matches experimental (loc - ref).
+    phase_diff = phase_ref - phase_loc
+
+    phase_noisy = add_noise(phase_diff, freqs)
 
     return phase_noisy, K_top, K_bottom, freqs

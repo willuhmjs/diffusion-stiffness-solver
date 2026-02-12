@@ -31,43 +31,36 @@ def get_theoretical_curves():
         k_tensor = torch.tensor([k_val]).float()
         
         # 1. Physics Engine Execution
-        # Returns raw phase (usually wrapped around pi or similar)
-        raw_phase = tri_layer_model_torch(freqs, k_tensor).detach().numpy().flatten()
+        # Compute phase DIFFERENCE (ref - loc) matching training convention
+        phase_loc = tri_layer_model_torch(freqs, k_tensor)
+        k_ref_tensor = torch.tensor([1e16]).float()
+        phase_ref = tri_layer_model_torch(freqs, k_ref_tensor)
+        raw_phase_diff = (phase_ref - phase_loc).detach().numpy().flatten()
         
-        # 2. Pre-processing (Match generate_data.py)
+        # 2. Pre-processing (Match generate_data.py EXACTLY)
         # Unwrap
-        phase_unwrapped = np.unwrap(np.deg2rad(raw_phase))
+        phase_unwrapped = np.unwrap(np.deg2rad(raw_phase_diff))
         phase_deg = np.rad2deg(phase_unwrapped)
         
-        # Normalize: MUST MATCH src/tasks/generate.py EXACTLY
-        # generate.py uses: (X_deg - phase_mean_global) / phase_std_global
+        # Center per-curve (matching generate.py: X_centered = X_deg - curve_means)
+        phase_centered = phase_deg - np.mean(phase_deg)
         
-        # 1. Center (Global Mean)
-        # Ensure stats are loaded correctly
-        if stats and 'phase_mean' in stats:
-            phase_mean_global = stats['phase_mean']
-            if isinstance(phase_mean_global, torch.Tensor): phase_mean_global = phase_mean_global.item()
-            # Use global mean, NOT instance mean
-            phase_centered = phase_deg - phase_mean_global
-        else:
-            print("Warning: 'phase_mean' not found in stats. Using instance mean (incorrect for inference).")
-            phase_centered = phase_deg - np.mean(phase_deg)
-
-        # 2. Normalize (Global Std)
+        # Normalize with global stats (matching generate.py: X_final = (X_centered - phase_mean) / phase_std)
+        phase_mean_val = 0.0
+        phase_std_val = 1.0
+        if stats and 'phase_mean' in stats and 'phase_std' in stats:
+            phase_mean_val = stats['phase_mean']
+            phase_std_val = stats['phase_std']
+            if isinstance(phase_mean_val, torch.Tensor): phase_mean_val = phase_mean_val.item()
+            if isinstance(phase_std_val, torch.Tensor): phase_std_val = phase_std_val.item()
+        
         phase_norm = torch.tensor(phase_centered, dtype=torch.float32).to(config.DEVICE)
-        
-        if stats and 'phase_std' in stats:
-            phase_std = stats['phase_std']
-            if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
-            phase_norm = phase_norm / (phase_std + 1e-8)
-        else:
-             print("Warning: 'phase_std' not found in stats. Using instance std (incorrect for inference).")
-             phase_norm = phase_norm / (np.std(phase_centered) + 1e-8)
+        phase_norm = (phase_norm - phase_mean_val) / (phase_std_val + 1e-8)
         
         # Store
         results[label] = {
             "k_true": k_val,
-            "raw_phase": raw_phase,
+            "raw_phase": raw_phase_diff,
             "phase_centered": phase_centered,
             "model_input": phase_norm.unsqueeze(0).unsqueeze(0) # [1, 1, Points]
         }
@@ -207,15 +200,18 @@ def evaluate_noise_sensitivity(model, stats, device):
     print(f"  -> Target Stiffness: {k_true:.2e} N/m^3")
     print(f"  -> Noise Levels: {noise_levels}")
 
-    # Generate Clean Curve
+    # Generate Clean Curve (Phase Difference, matching training)
     freqs = get_frequencies().to(device)
     k_tensor = torch.tensor([k_true]).float().to(device)
+    k_ref_tensor = torch.tensor([1e16]).float().to(device)
     
-    # Physics Engine
-    raw_phase = tri_layer_model_torch(freqs, k_tensor).detach().cpu().numpy().flatten()
+    # Physics Engine - compute phase difference (ref - loc)
+    phase_loc = tri_layer_model_torch(freqs, k_tensor).detach().cpu().numpy().flatten()
+    phase_ref = tri_layer_model_torch(freqs, k_ref_tensor).detach().cpu().numpy().flatten()
+    raw_phase_diff = phase_ref - phase_loc
     
     # Pre-process (Unwrap)
-    phase_unwrapped = np.unwrap(np.deg2rad(raw_phase))
+    phase_unwrapped = np.unwrap(np.deg2rad(raw_phase_diff))
     phase_deg_clean = np.rad2deg(phase_unwrapped)
     
     # Stats for normalization
@@ -240,9 +236,9 @@ def evaluate_noise_sensitivity(model, stats, device):
             noise = np.random.normal(0, sigma, phase_deg_clean.shape)
             phase_noisy = phase_deg_clean + noise
             
-            # Normalize
-            phase_centered = phase_noisy - phase_mean
-            phase_norm = phase_centered / (phase_std + 1e-8)
+            # Center per-curve then normalize with global stats
+            phase_centered = phase_noisy - np.mean(phase_noisy)
+            phase_norm = (phase_centered - phase_mean) / (phase_std + 1e-8)
             
             # To Tensor [1, Points]
             condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).unsqueeze(0).to(device)

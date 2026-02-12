@@ -30,61 +30,6 @@ def add_noise(x_start, t, device=config.DEVICE):
     x_noisy = sqrt_alpha_bar.view(-1, 1) * x_start + sqrt_one_minus_alpha_bar.view(-1, 1) * noise
     return x_noisy, noise
 
-def sample_step(model, x, t, t_norm, condition, betas, alphas, alphas_cumprod):
-    """
-    Performs a single reverse diffusion step.
-    """
-    z = torch.randn_like(x) if t > 0 else torch.zeros_like(x)
-    
-    predicted_noise = model(x, t_norm, condition)
-    
-    beta_t = betas[t]
-    alpha_t = alphas[t]
-    alpha_bar_t = alphas_cumprod[t]
-    
-    # Mean calculation (DDPM)
-    # mu = (1 / sqrt(alpha_t)) * (x_t - (beta_t / sqrt(1 - alpha_bar_t)) * epsilon)
-    # Standard deviation calculation
-    # sigma = sqrt(beta_t)
-    
-    term1 = 1 / torch.sqrt(alpha_t)
-    term2 = (beta_t / torch.sqrt(1 - alpha_bar_t)) * predicted_noise
-    
-    mean = term1 * (x - term2)
-    sigma = torch.sqrt(beta_t)
-    
-    return mean + sigma * z
-
-def sample(model, condition_curve, num_samples=1, device=config.DEVICE):
-    model.eval()
-    betas = BETAS.to(device)
-    alphas = ALPHAS.to(device)
-    alphas_cumprod = ALPHAS_CUMPROD.to(device)
-    
-    with torch.no_grad():
-        x = torch.randn(num_samples, 1).to(device)
-        
-        # Handle batching for condition curve
-        # condition_curve shape: [Batch, Points] or [1, Points]
-        # If batch size of condition doesn't match num_samples, we might need to repeat or error.
-        # Assuming typical use case: generate 1 sample per condition, OR generate N samples for 1 condition.
-        
-        if condition_curve.shape[0] == 1 and num_samples > 1:
-             condition_curve = condition_curve.repeat(num_samples, 1)
-        elif condition_curve.shape[0] != num_samples:
-             # If we passed a batch of conditions, we expect to generate 1 sample per condition usually.
-             # If mismatch, warn or error? For now, assume user knows what they are doing (e.g. batch inference).
-             pass
-
-        for i in reversed(range(config.TIMESTEPS)):
-            t = i
-            t_tensor = torch.tensor([t] * x.shape[0], device=device)
-            t_norm = t_tensor.float().view(-1, 1) / config.TIMESTEPS
-            
-            x = sample_step(model, x, t, t_norm, condition_curve, betas, alphas, alphas_cumprod)
-            
-    return x
-
 def sample(model, condition_curve, num_samples=1, device=config.DEVICE):
     model.eval()
     betas = BETAS.to(device)

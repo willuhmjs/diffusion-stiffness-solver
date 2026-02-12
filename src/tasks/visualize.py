@@ -26,7 +26,7 @@ def visualize_training():
     else:
         print("Error: Could not determine columns for plotting.")
         return
-    # plt.plot(df['epoch'], df['val_loss'], label='Validation Loss')
+    plt.plot(df['epoch'], df['val_loss'], label='Validation Loss', alpha=0.7)
     plt.xlabel('Epoch')
     plt.ylabel('Loss (MSE)')
     plt.title('Training Loss\nData Source: results/training_log.csv')

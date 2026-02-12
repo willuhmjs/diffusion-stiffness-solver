@@ -23,6 +23,9 @@ def main():
     infer_parser.add_argument("--loc", type=str, help="Path to Location CSV (optional, uses default if not provided)")
     infer_parser.add_argument("--ref", type=str, help="Path to Reference CSV (optional, uses default if not provided)")
 
+    # Batch Inference
+    subparsers.add_parser("batch_inference", help="Run batch inference on experimental data")
+
     # Verify (Closed-Loop)
     subparsers.add_parser("verify", help="Run closed-loop verification on theoretical curves")
 
@@ -45,6 +48,7 @@ def main():
     from src.tasks.generate import generate_data_task
     from src.tasks.train import train_model
     from src.tasks.inference import infer_task
+    from src.tasks.batch_inference import run_batch_inference
     from src.tasks.verify import verify_task
     from src.tasks.uncertainty import uncertainty_task
     from src.tasks.pipeline import run_pipeline
@@ -55,6 +59,8 @@ def main():
         train_model()
     elif args.command == "infer":
         infer_task(args.loc, args.ref)
+    elif args.command == "batch_inference":
+        run_batch_inference()
     elif args.command == "uncertainty":
         uncertainty_task(args.loc, args.ref, args.samples)
     elif args.command == "verify":

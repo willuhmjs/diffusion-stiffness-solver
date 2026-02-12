@@ -54,6 +54,8 @@ def train_model():
         writer.writerow(['epoch', 'train_loss', 'val_loss', 'lr'])
     
     min_val_loss = float('inf')
+    epochs_without_improvement = 0
+    early_stop_patience = 500  # Stop if no improvement for this many epochs
     
     # 3. Training Loop
     # Strategy: Save best model based on VALIDATION loss.
@@ -93,27 +95,36 @@ def train_model():
         
         model.eval()
         with torch.no_grad():
-            # Random Val Batch
-            val_idx_batch = torch.randint(0, len(val_phase), (config.BATCH_SIZE,))
-            val_phase_batch = val_phase[val_idx_batch]
-            val_stiffness_batch = val_stiffness[val_idx_batch]
-            
-            t_val = torch.randint(0, config.TIMESTEPS, (config.BATCH_SIZE,), device=device)
-            noisy_stiffness_val, noise_val = add_noise(val_stiffness_batch, t_val, device=device)
-            t_norm_val = t_val.view(-1, 1).float() / config.TIMESTEPS
-            
-            predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch)
-            val_loss_tensor = loss_fn(noise_val, predicted_noise_val)
-            val_loss = val_loss_tensor.item()
+            # Full validation evaluation for stable loss estimate
+            val_losses = []
+            for vi in range(0, len(val_phase), config.BATCH_SIZE):
+                val_phase_batch = val_phase[vi:vi+config.BATCH_SIZE]
+                val_stiffness_batch = val_stiffness[vi:vi+config.BATCH_SIZE]
+                batch_len = len(val_phase_batch)
+                
+                t_val = torch.randint(0, config.TIMESTEPS, (batch_len,), device=device)
+                noisy_stiffness_val, noise_val = add_noise(val_stiffness_batch, t_val, device=device)
+                t_norm_val = t_val.view(-1, 1).float() / config.TIMESTEPS
+                
+                predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch)
+                val_losses.append(loss_fn(noise_val, predicted_noise_val).item() * batch_len)
+            val_loss = sum(val_losses) / len(val_phase)
         
         # Step Scheduler (monitor validation loss)
         scheduler.step(val_loss)
         lr_curr = optimizer.param_groups[0]['lr']
         
-        # Save Best Model
+        # Save Best Model & Early Stopping
         if val_loss < min_val_loss:
             min_val_loss = val_loss
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), best_path)
+        else:
+            epochs_without_improvement += 1
+        
+        if epochs_without_improvement >= early_stop_patience:
+            print(f"\nEarly stopping at epoch {epoch} (no improvement for {early_stop_patience} epochs)")
+            break
             
         # Logging
         with open(log_path, 'a', newline='') as f:

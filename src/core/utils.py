@@ -131,58 +131,57 @@ def load_stats(device=config.DEVICE):
 
 def process_experimental_data(freqs, phase_diff, stats=None, target_freqs=None):
     """
-    Interpolates, Centers, and Normalizes experimental data.
+    Interpolates and Normalizes experimental data to match training distribution.
     
     Args:
-        freqs (array): Frequencies of the input data.
-        phase_diff (array): Phase difference values.
-        stats (dict, optional): Normalization statistics (mean/std). 
-                              If None, uses Instance Normalization (Not Recommended for Amplitude tasks).
+        freqs (array): Frequencies of the input data (Hz).
+        phase_diff (array): Phase difference values (radians).
+        stats (dict, optional): Normalization statistics (mean/std from training). 
         target_freqs (array, optional): Frequencies to interpolate to. Defaults to config range.
         
     Returns:
-        tuple: (normalized_tensor, centered_curve, target_freqs)
+        tuple: (normalized_tensor, centered_curve_deg, target_freqs)
     """
     if target_freqs is None:
         target_freqs = np.linspace(config.FREQ_MIN, config.FREQ_MAX, config.NUM_POINTS)
         
-    # Unwrapping: Fix phase jumps > pi
+    # Unwrapping: Fix phase jumps > pi (input is radians)
     phase_diff = np.unwrap(phase_diff)
 
     # Smoothing: Apply Gaussian Filter to reduce noise
-    # Standard deviation of 2.0 corresponds to a mild smoothing to suppress high-freq jitter
     phase_diff_smooth = gaussian_filter1d(phase_diff, sigma=2.0)
 
     # Interpolate
     f_interp = interp1d(freqs, phase_diff_smooth, kind='linear', fill_value="extrapolate")
-    curve = f_interp(target_freqs)
+    curve_rad = f_interp(target_freqs)
     
-    # Center (Remove Mean) - This removes the arbitrary phase offset
-    # Note: Global Normalization typically happens on Centered Data in this pipeline
-    curve_centered = curve - np.mean(curve)
+    # Convert to degrees (training data is in degrees)
+    curve_deg = np.rad2deg(curve_rad)
     
-    # Normalize
+    # Center per-curve (remove mean offset, matching training preprocessing)
+    curve_centered_deg = curve_deg - np.mean(curve_deg)
+    
+    # Normalize using GLOBAL stats (same as training)
     if stats is not None and 'phase_mean' in stats and 'phase_std' in stats:
-        # Extract scalar values from stats (which might be 0-dim tensors or python floats)
         phase_mean = stats['phase_mean']
         phase_std = stats['phase_std']
         
         if isinstance(phase_mean, torch.Tensor): phase_mean = phase_mean.item()
         if isinstance(phase_std, torch.Tensor): phase_std = phase_std.item()
-            
         
-        curve_norm = curve_centered / (phase_std + 1e-8)
+        # Global standardization on centered curve: (x - global_mean) / global_std
+        curve_norm = (curve_centered_deg - phase_mean) / (phase_std + 1e-8)
         
     else:
-        # Instance Normalize (Fallback) - Destroys Amplitude Info!
+        # Instance Normalize (Fallback) - Not recommended
         print("Warning: No Global Stats provided. Using Instance Normalization (may reduce accuracy).")
-        curve_std = np.std(curve_centered)
-        curve_norm = curve_centered / (curve_std + 1e-8)
+        curve_std = np.std(curve_deg)
+        curve_norm = (curve_deg - np.mean(curve_deg)) / (curve_std + 1e-8)
     
     # Convert to Tensor
     curve_tensor = torch.tensor(curve_norm, dtype=torch.float32)
     
-    return curve_tensor, curve_centered, target_freqs
+    return curve_tensor, curve_centered_deg, target_freqs
 
 def inverse_transform_k(log_k_norm, stats):
     """
