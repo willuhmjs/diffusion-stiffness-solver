@@ -6,6 +6,8 @@ from src.core.config_loader import cfg
 Z_SUB = float(cfg.physics.get('z_sub', 12.3e6))
 C_SUB = float(cfg.physics.get('c_sub', 5640.0))
 RHO_SUB = float(cfg.physics.get('rho_sub', 2180.0))
+H_SUB = float(cfg.physics.get('h_sub', 0.004))
+ALPHA_SUB = float(cfg.physics.get('alpha_sub', 30.0))
 
 RHO_ADH = float(cfg.physics.get('rho_adh', 1200.0))
 C_ADH = float(cfg.physics.get('c_adh', 1800.0))

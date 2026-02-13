@@ -40,7 +40,7 @@ def tri_layer_model_torch(
         K_bottom = K_bottom.unsqueeze(1)
 
     w = 2 * np.pi * frequencies.unsqueeze(0)  # [1, F]
-    j = torch.tensor(1j, dtype=torch.cfloat)
+    j = torch.tensor(1j, dtype=torch.cfloat, device=frequencies.device)
 
     batch_size = K_top.shape[0]
     num_freqs = frequencies.shape[0]
@@ -85,7 +85,7 @@ def tri_layer_model_torch(
     # Spring matrices
     # -------------------------
     def spring_matrix(K):
-        M = torch.zeros(batch_size, num_freqs, 2, 2, dtype=torch.cfloat)
+        M = torch.zeros(batch_size, num_freqs, 2, 2, dtype=torch.cfloat, device=frequencies.device)
         M[:, :, 0, 0] = 1.0
         M[:, :, 1, 1] = 1.0
         M[:, :, 1, 0] = j * w / K
@@ -107,7 +107,7 @@ def tri_layer_model_torch(
         c_term = c_term.unsqueeze(0).expand(batch_size, -1)
         s_term = s_term.unsqueeze(0).expand(batch_size, -1)
 
-    M_layer = torch.zeros(batch_size, num_freqs, 2, 2, dtype=torch.cfloat)
+    M_layer = torch.zeros(batch_size, num_freqs, 2, 2, dtype=torch.cfloat, device=K_top.device)
     M_layer[:, :, 0, 0] = c_term
     M_layer[:, :, 1, 1] = c_term
 
@@ -142,6 +142,7 @@ def tri_layer_model_torch(
 
     return phase_deg
 
+
 def add_noise(phase_curves, frequencies):
     """
     Injects realistic sensor noise: Gaussian Noise + Baseline Drift
@@ -161,25 +162,25 @@ def add_noise(phase_curves, frequencies):
     drift_mag = noise_cfg.get('drift_factor', 1.0)
     
     # Random drift period between 1/2 and 2x the bandwidth
-    t = torch.linspace(0, 1, num_points).unsqueeze(0).expand(batch_size, -1)
-    drift_freq = torch.rand(batch_size, 1) * 2.0 + 0.5 # 0.5 to 2.5 cycles
-    drift_phase = torch.rand(batch_size, 1) * 2 * np.pi
+    t = torch.linspace(0, 1, num_points, device=phase_curves.device).unsqueeze(0).expand(batch_size, -1)
+    drift_freq = torch.rand(batch_size, 1, device=phase_curves.device) * 2.0 + 0.5 # 0.5 to 2.5 cycles
+    drift_phase = torch.rand(batch_size, 1, device=phase_curves.device) * 2 * np.pi
     
     drift = drift_mag * torch.sin(2 * np.pi * drift_freq * t + drift_phase)
     
     return phase_curves + gaussian_noise + drift
 
-def generate_dataset(n_samples=1000, asymmetric=True):
-    print(f"Generating {n_samples} physics samples...")
+def generate_dataset(n_samples=1000, asymmetric=True, device=config.DEVICE):
+    print(f"Generating {n_samples} physics samples on {device}...")
 
     log_k = torch.FloatTensor(n_samples, 1).uniform_(
         config.K_MIN_LOG, config.K_MAX_LOG
-    )
+    ).to(device)
     K_top = 10 ** log_k
 
     if asymmetric:
         # Bottom interface varies independently within ±1 decade
-        delta = torch.FloatTensor(n_samples, 1).uniform_(-1.0, 1.0)
+        delta = torch.FloatTensor(n_samples, 1).uniform_(-1.0, 1.0).to(device)
         K_bottom = K_top * (10 ** delta)
     else:
         K_bottom = K_top
@@ -187,24 +188,24 @@ def generate_dataset(n_samples=1000, asymmetric=True):
     # Disbonds (25%)
     n_disbonds = int(0.25 * n_samples)
     if n_disbonds > 0:
-        log_k_weak = torch.FloatTensor(n_disbonds, 1).uniform_(8.0, 13.0)
+        log_k_weak = torch.FloatTensor(n_disbonds, 1).uniform_(8.0, 13.0).to(device)
         K_top[:n_disbonds] = 10 ** log_k_weak
         K_bottom[:n_disbonds] = 10 ** log_k_weak
 
     alpha = torch.FloatTensor(n_samples, 1).uniform_(
         config.ALPHA_ADH * 0.5, config.ALPHA_ADH * 2.0
-    )
+    ).to(device)
 
     c_adh = torch.FloatTensor(n_samples, 1).uniform_(
         config.C_ADH * 0.9, config.C_ADH * 1.1
-    )
+    ).to(device)
 
     # Vary bondline thickness to match real specimen range (~230-290 µm)
     l_bl = torch.FloatTensor(n_samples, 1).uniform_(
         config.L_BL * 0.85, config.L_BL * 1.15
-    )
+    ).to(device)
 
-    freqs = get_frequencies()
+    freqs = get_frequencies().to(device)
 
     # --- Compute phase for sample (location measurement) ---
     phase_loc = tri_layer_model_torch(

@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import re
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -66,27 +67,27 @@ def simulate_phase(k_val, freqs, physics_params, l_bl_override=None):
     k_tensor = torch.tensor([k_val]).float()
     
     # Extract params
-    z_sub = physics_params.get('z_sub')
     l_bl = l_bl_override if l_bl_override is not None else physics_params.get('l_bl')
     c_adh = physics_params.get('c_adh')
-    alpha = physics_params.get('alpha_adh')
-    
+    alpha_adh = physics_params.get('alpha_adh')
+    z_sub = physics_params.get('z_sub')
+
     common_kwargs = dict(
-        alpha=float(alpha) if alpha else None,
+        alpha=float(alpha_adh) if alpha_adh else None,
         c_adh=float(c_adh) if c_adh else None,
-        z_sub=float(z_sub) if z_sub else None,
         l_bl=float(l_bl) if l_bl else None,
+        z_sub=float(z_sub) if z_sub else None,
     )
     
     # Phase at location (predicted K)
     phase_loc = tri_layer_model_torch(
-        freqs, K_top=k_tensor, K_bottom=k_tensor, **common_kwargs
+        freqs, k_tensor, **common_kwargs
     )
     
     # Phase at reference (perfect bond)
     k_ref = torch.tensor([1e16]).float()
     phase_ref = tri_layer_model_torch(
-        freqs, K_top=k_ref, K_bottom=k_ref, **common_kwargs
+        freqs, k_ref, **common_kwargs
     )
     
     # Phase difference: ref - loc (matches experimental loc - ref sign convention)
@@ -124,15 +125,17 @@ def run_batch_inference():
 
     # Load Specimen Properties
     thickness_map = {}
-    median_thickness_map = {}
     try:
-        df_props = pd.read_csv('data/metadata/specimen_properties.csv')
-        # Create a lookup dictionary: (Specimen, Location) -> Thickness
-        thickness_map = df_props.set_index(['Specimen', 'Location'])['Thickness, m'].to_dict()
-        
-        # Calculate Median Thickness per Specimen for Reference Estimation
-        median_thickness_map = df_props.groupby('Specimen')['Thickness, m'].median().to_dict()
-        print("Loaded specimen properties.")
+        meta_path = 'data/metadata/specimen_properties.csv'
+        if os.path.exists(meta_path):
+            df_props = pd.read_csv(meta_path)
+            # Create a lookup dictionary: (Specimen, Location) -> Thickness
+            # Check if column is 'Thickness_m' or 'Thickness, m'
+            thick_col = 'Thickness_m' if 'Thickness_m' in df_props.columns else 'Thickness, m'
+            thickness_map = df_props.set_index(['Specimen', 'Location'])[thick_col].to_dict()
+            print("Loaded specimen properties.")
+        else:
+            print(f"Warning: Metadata file not found at {meta_path}")
     except Exception as e:
         print(f"Warning: Could not load specimen properties: {e}")
     
@@ -147,6 +150,7 @@ def run_batch_inference():
             spec_key = task['specimen']
             loc_key = task['location']
             s_num = None
+            l_num = None
             
              # Normalize keys for lookup
             try:
@@ -157,11 +161,9 @@ def run_batch_inference():
                 l_num = int(loc_key)
                 
                 h_loc = thickness_map.get((s_num, l_num))
-                h_ref = median_thickness_map.get(s_num)
             except:
                 h_loc = None
-                h_ref = None
-
+            
             # Load Data
             df_loc = utils.load_file_to_dataframe(task['loc_path'])
             df_ref = utils.load_file_to_dataframe(task['ref_path'])
@@ -171,75 +173,13 @@ def run_batch_inference():
             real_freqs = df_loc['Frequency'].values * 1e6
             
             # --- SIGN FLIP DIAGNOSIS ---
-            # Previous logic assumed Exp(Loc-Ref) == TMM(Ref-Loc) due to sign convention.
-            # However, results showed inverted correlation (Strong Spec1 -> Weak Pred).
-            # We explicitly flip the sign here to test if Exp(Ref-Loc) aligns better.
-            # Using (Ref - Loc) from experiment:
+            # Using (Ref - Loc) to flip the sign for experiment:
             raw_phase_diff = df_ref['Phase'].values - df_loc['Phase'].values
-            
-            # --- PHYSICS CORRECTION (Thickness Mismatch) ---
-            if h_loc and h_ref:
-            # if False: # TEMPORARILY DISABLED TO CHECK BASELINE
-                # Calculate what the Reference Phase would be if it had h_loc instead of h_ref
-                # Correction = Phase(Ref, h_loc) - Phase(Ref, h_ref)
-                
-                # Use typical params from config
-                # We need frequencies that match the REAL data for correction, or interp later?
-                # Usually simpler to generate correction on target_freqs and interp raw_phase_diff, 
-                # OR generate correction on real_freqs. 
-                # Physics model is fast, let's generate on target_freqs (which process_experimental_data uses).
-                
-                # Wait, utils.process_experimental_data handles interpolation. 
-                # Better to correct AFTER processing/interpolation so freqs match.
-                pass
             
             # Process for Model
             curve_tensor, curve_centered, target_freqs = utils.process_experimental_data(
                 real_freqs, raw_phase_diff, stats=stats
             )
-            
-            # --- APPLY CORRECTION ---
-            if h_loc and h_ref:
-                # print(f"    Applying Thickness Correction: h_loc={h_loc*1e6:.1f}um, h_ref~={h_ref*1e6:.1f}um")
-                
-                freqs_t = torch.tensor(target_freqs).float()
-                k_good = torch.tensor([1e16]).float()
-                
-                # Get common physics params
-                phys = config_data.get('physics', {})
-                params = {
-                    'c_adh': float(phys.get('c_adh', 2650.0)),
-                    'alpha': float(phys.get('alpha_adh', 1000.0)),
-                    'z_sub': float(phys.get('z_sub', 1.76e7))
-                }
-                
-                # Phase(Ref, h_loc)
-                p_ref_hloc = tri_layer_model_torch(freqs_t, k_good, k_good, l_bl=float(h_loc), **params)
-                # Phase(Ref, h_ref)
-                p_ref_href = tri_layer_model_torch(freqs_t, k_good, k_good, l_bl=float(h_ref), **params)
-                
-                correction = (p_ref_hloc - p_ref_href).detach().numpy().flatten()
-                
-                # Unwrap correction (it might wrap if h diff is large, though unlikely for 20um)
-                correction = np.rad2deg(np.unwrap(np.deg2rad(correction)))
-                
-                # Apply Correction: Target = Measured + Correction
-                # curve_centered is in degrees
-                curve_corrected = curve_centered + correction
-                
-                # Re-center (model requires zero mean)
-                curve_corrected_centered = curve_corrected - np.mean(curve_corrected)
-                
-                # Update input tensor
-                # Normalize using stats
-                p_mean = stats['phase_mean']
-                p_std = stats['phase_std']
-                if isinstance(p_mean, torch.Tensor): p_mean = p_mean.item()
-                if isinstance(p_std, torch.Tensor): p_std = p_std.item()
-                
-                curve_norm = (curve_corrected_centered - p_mean) / (p_std + 1e-8)
-                curve_tensor = torch.tensor(curve_norm, dtype=torch.float32)
-                curve_centered = curve_corrected_centered # For plotting/MSE
             
             freqs_tensor = torch.tensor(target_freqs).float() # For physics sim
             
@@ -251,22 +191,25 @@ def run_batch_inference():
 
             # --- RUN MODEL ---
             cond = curve_tensor.to(device).unsqueeze(0)
+            
+            # inference.py samples 50 times.
             preds = sample(model, cond, num_samples=50, device=device)
             k_vals = [utils.inverse_transform_k(p, stats) for p in preds]
-            # Use median to reject outlier samples (e.g. degenerate high-K predictions)
-            mean_k = float(np.median(k_vals))
+            
+            # Apply clamping
+            import src.core.config as config_module
+            K_MAX = config_module.K_MAX_PHYS
+            
+            k_vals_clamped = [min(k, K_MAX) for k in k_vals]
+            mean_k = float(np.mean(k_vals_clamped))
+            std_k = float(np.std(k_vals_clamped))
             
             real_thickness = h_loc # Reuse determined thickness for sim
 
-            if real_thickness:
-                # print(f"    Using measured thickness: {real_thickness:.6f} m")
-                pass
-            else:
-                pass
-
-
-            # Simulate
+            # Simulate for verification
+            # Pass l_bl_override as real_thickness
             sim = simulate_phase(mean_k, freqs_tensor, config_data['physics'], l_bl_override=real_thickness)
+            
             # Compare directly without amplitude scaling (both are centered phase diff in degrees)
             mse = np.mean((curve_centered - sim)**2)
             
@@ -276,6 +219,7 @@ def run_batch_inference():
                 'Specimen': task['specimen'],
                 'Location': task['location'],
                 'Predicted_K': mean_k,
+                'Uncertainty': std_k, 
                 'Config_Used': 'Default',
                 'MSE': mse,
                 'Thickness_Used': real_thickness if real_thickness else 'Default'
@@ -285,13 +229,18 @@ def run_batch_inference():
             os.makedirs('results/fits', exist_ok=True)
             fit_path = os.path.join('results/fits', f"fit_{task['specimen']}_Loc{task['location']}.png")
             
+            # Scaling for visual verification (like in inference.py)
+            scaling_factor = (np.max(curve_centered) - np.min(curve_centered)) / \
+                             (np.max(sim) - np.min(sim)) if (np.max(sim) - np.min(sim)) > 1e-6 else 1.0
+            
+            sim_scaled = sim * scaling_factor
+
             plt.figure(figsize=(10,6))
             plt.plot(target_freqs/1e6, curve_centered, 'b-', label='Real Data')
-            plt.plot(target_freqs/1e6, sim, 'r--', label=f'AI Pred (K={mean_k:.1e})')
+            # Plot Scaled AI Pred like inference.py
+            plt.plot(target_freqs/1e6, sim_scaled, 'r--', label=f'AI Pred (K={mean_k:.1e}) [Scaled]')
             
-            # Reference Line (from Fracture Energy) removed
-            
-            plt.title(f"Model Fit\nSpecimen {task['specimen']} Loc {task['location']}")
+            plt.title(f"Model Fit\nSpecimen {task['specimen']} Loc {task['location']}\nThickness: {real_thickness if real_thickness else 'Default'}")
             plt.xlabel("Freq (MHz)")
             plt.ylabel("Phase Deviation")
             plt.legend()
@@ -301,6 +250,8 @@ def run_batch_inference():
             
         except Exception as e:
             print(f"  -> Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     # 5. Save Results
     if results:

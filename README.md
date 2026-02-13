@@ -83,5 +83,5 @@ Inference requires **two files** for each measurement location to cancel out sys
 ## Physics Model
 
 The forward model uses the Transfer Matrix Method for a Tri-Layer system (Substrate-Adhesive-Substrate).
-*   **Inputs:** Frequencies, Stiffness ($K_{top}, K_{bottom}$), Adhesive Properties ($c, \alpha, \rho$).
+*   **Inputs:** Frequencies, Stiffness ($K_{top}, K_{bottom}$), Adhesive Properties ($c, \alpha, \rho$), and **Sample-Specific Thickness** ($h$).
 *   **Outputs:** Reflection Phase Spectrum.

@@ -268,6 +268,9 @@ def evaluate_noise_sensitivity(model, stats, device):
     # Plot
     plt.figure(figsize=(10, 6))
     
+    # Add thickness to title
+    thickness_um = config.L_BL * 1e6
+
     # Ground Truth Line
     plt.axhline(y=k_true, color='g', linestyle='-', label=f'Ground Truth (K={k_true:.1e})')
     
@@ -279,7 +282,7 @@ def evaluate_noise_sensitivity(model, stats, device):
     plt.ylim(1e13, 1e15)
     plt.xlabel('Input Noise Level (Sigma)')
     plt.ylabel('Predicted Stiffness (N/m^3)')
-    plt.title(f'Noise Sensitivity Analysis\nTarget K={k_true:.1e}')
+    plt.title(f'Noise Sensitivity Analysis\nTarget K={k_true:.1e}, Thickness={thickness_um:.1f} um')
     plt.legend()
     plt.grid(True, which="both", ls="-", alpha=0.5)
     

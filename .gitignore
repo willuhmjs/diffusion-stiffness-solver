@@ -50,3 +50,6 @@ dist/
 
 # Configuration
 config/sensitive.yaml
+
+# Results
+results/*

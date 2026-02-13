@@ -3,7 +3,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import sys
 import argparse
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 import src.core.config as config
 import src.core.utils as utils
 from src.core.model import ConditionalDiffusionModel
@@ -72,9 +77,55 @@ def infer_task(loc_path=None, ref_path=None):
     df_loc.columns = df_loc.columns.str.strip()
     df_ref.columns = df_ref.columns.str.strip()
 
+    # 2.5 Lookup Thickness
+    # Try to determine specimen and location from filename to look up thickness
+    target_filename = os.path.basename(loc_path) if loc_path else "Spec4_Loc3_Rep1.dat"
+    
+    # Load metadata
+    thickness_val = None
+    try:
+        meta_path = 'data/metadata/specimen_properties.csv'
+        if os.path.exists(meta_path):
+            df_meta = pd.read_csv(meta_path)
+            # Parse filename (e.g. Spec3_Loc1...)
+            # We need to extract Specimen number and Location number
+            # Assuming format "SpecX_LocY..."
+            import re
+            match = re.search(r"Spec(\d+)_Loc(\d+)", target_filename, re.IGNORECASE)
+            if match:
+                s_num = int(match.group(1))
+                l_num = int(match.group(2))
+                
+                # Lookup
+                row = df_meta[(df_meta['Specimen'] == s_num) & (df_meta['Location'] == l_num)]
+                if not row.empty:
+                    # Check for column name variations
+                    col_name = 'Thickness_m' if 'Thickness_m' in df_meta.columns else 'Thickness, m'
+                    thickness_val = row.iloc[0][col_name]
+                    print(f"Found Metadata Thickness for Spec{s_num} Loc{l_num}: {thickness_val*1e6:.1f} um")
+                else:
+                    print(f"Warning: Spec{s_num} Loc{l_num} not found in metadata.")
+            else:
+                print(f"Warning: Could not parse Spec/Loc from filename '{target_filename}'")
+        else:
+            print("Warning: Metadata file not found at", meta_path)
+            
+    except Exception as e:
+        print(f"Warning: Error looking up thickness: {e}")
+
+    # Override config if found
+    if thickness_val is not None:
+        config.l_bl = thickness_val
+        print(f"-> Overriding config.l_bl with specific thickness: {config.l_bl} m")
+    else:
+        print(f"Error: Could not find specific thickness for {target_filename} in metadata.")
+        print("Aborting inference to prevent incorrect physics parameters.")
+        return
+
     # 3. Process
-    real_freqs = df_loc['Frequency'].values * 1e6 
-    raw_phase_diff = df_loc['Phase'].values - df_ref['Phase'].values
+    real_freqs = df_loc['Frequency'].values * 1e6
+    # MATCH BATCH INFERENCE: Ref - Loc
+    raw_phase_diff = df_ref['Phase'].values - df_loc['Phase'].values
     
     # Centralized Processing
     curve_tensor, curve_centered, target_freqs = utils.process_experimental_data(real_freqs, raw_phase_diff, stats=stats)
@@ -157,8 +208,16 @@ def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown
     k_tensor = torch.tensor([k_val]).float()
     f_tensor = torch.tensor(freqs).float()
     
-    # Physics Sim (AI Pred)
-    sim_phase = tri_layer_model_torch(f_tensor, k_tensor).detach().numpy().flatten()
+    # Physics Sim (AI Pred) - Using 3-Layer Model
+    sim_phase = tri_layer_model_torch(
+        f_tensor,
+        k_tensor,
+        # h_sub is implicit in 3-layer (assumes semi-infinite or uses Z_sub directly)
+        z_sub=config.Z_SUB,
+        l_bl=config.L_BL,
+        c_adh=config.C_ADH,
+        alpha=config.ALPHA_ADH
+    ).detach().numpy().flatten()
     sim_phase = np.rad2deg(np.unwrap(np.deg2rad(sim_phase)))
     sim_phase_centered = sim_phase - np.mean(sim_phase)
 
@@ -175,7 +234,14 @@ def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown
     # Reference Sim (Derived from Fracture Energy)
     if k_ref is not None:
         k_ref_tensor = torch.tensor([k_ref]).float()
-        ref_phase = tri_layer_model_torch(f_tensor, k_ref_tensor).detach().numpy().flatten()
+        ref_phase = tri_layer_model_torch(
+            f_tensor,
+            k_ref_tensor,
+            z_sub=config.Z_SUB,
+            l_bl=config.L_BL,
+            c_adh=config.C_ADH,
+            alpha=config.ALPHA_ADH
+        ).detach().numpy().flatten()
         ref_phase = np.rad2deg(np.unwrap(np.deg2rad(ref_phase)))
         ref_phase_centered = ref_phase - np.mean(ref_phase)
         

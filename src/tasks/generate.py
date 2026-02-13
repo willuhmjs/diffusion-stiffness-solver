@@ -15,9 +15,9 @@ def generate_data_task():
     
     # Unwrap and Convert to Degrees (Engine returns wrapped degrees, we ensure unwrapping)
     # Note: physics.py now returns degrees. We need radians for numpy unwrap
-    X_numpy = np.deg2rad(X_raw.numpy())
+    X_numpy = np.deg2rad(X_raw.cpu().numpy())
     X_unwrapped = np.unwrap(X_numpy, axis=1)
-    X_deg = torch.from_numpy(np.rad2deg(X_unwrapped)).float()
+    X_deg = torch.from_numpy(np.rad2deg(X_unwrapped)).float().to(X_raw.device)
 
     # 3. Log-Transform Stiffness
     Y_log = torch.log10(Y_raw)
