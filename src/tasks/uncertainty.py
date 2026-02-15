@@ -85,7 +85,12 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
 
     # 3. Process Data
     real_freqs = df_loc['Frequency'].values * 1e6 
-    raw_phase_diff = df_loc['Phase'].values - df_ref['Phase'].values
+    # Unwrap each signal individually before subtracting (prevents wrapping artifacts)
+    phase_loc_unwrapped = np.unwrap(df_loc['Phase'].values)
+    phase_ref_unwrapped = np.unwrap(df_ref['Phase'].values)
+    # Sign convention: instruments have opposite sign to TMM, so
+    # exp(loc - ref) matches training sim(ref - loc).
+    raw_phase_diff = phase_loc_unwrapped - phase_ref_unwrapped
     
     curve_tensor, curve_centered, target_freqs = utils.process_experimental_data(real_freqs, raw_phase_diff, stats=stats)
     
@@ -97,6 +102,40 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     # Prepare input for model [1, 1, Points] -> [1, Points] for sample function
     curve_norm = curve_tensor.to(device).unsqueeze(0).unsqueeze(1) 
     condition_input = curve_norm.squeeze(1) # [1, Points]
+
+    # --- LOOKUP THICKNESS ---
+    target_filename = os.path.basename(loc_path) if loc_path else "Spec4_Loc3_Rep1.dat"
+    try:
+        thickness_val = config.L_BL 
+    except AttributeError:
+        # Fallback if config.L_BL is somehow missing, though it should be there
+        thickness_val = 0.0002
+    
+    # Try metadata
+    try:
+        meta_path = 'data/metadata/specimen_properties.csv'
+        if os.path.exists(meta_path):
+            df_meta = pd.read_csv(meta_path)
+            import re
+            match = re.search(r"Spec(\d+)_Loc(\d+)", target_filename, re.IGNORECASE)
+            if match:
+                s_num = int(match.group(1))
+                l_num = int(match.group(2))
+                row = df_meta[(df_meta['Specimen'] == s_num) & (df_meta['Location'] == l_num)]
+                if not row.empty:
+                     col_name = 'Thickness_m' if 'Thickness_m' in df_meta.columns else 'Thickness, m'
+                     thickness_val = row.iloc[0][col_name]
+                     print(f"Using metadata thickness: {thickness_val*1e6:.1f} um")
+    except Exception as e:
+        print(f"Thickness lookup failed: {e}")
+
+    l_bl_mean = stats.get('l_bl_mean', 0.0)
+    l_bl_std = stats.get('l_bl_std', 1.0)
+    if isinstance(l_bl_mean, torch.Tensor): l_bl_mean = l_bl_mean.item()
+    if isinstance(l_bl_std, torch.Tensor): l_bl_std = l_bl_std.item()
+    
+    l_bl_norm = (thickness_val - l_bl_mean) / (l_bl_std + 1e-8)
+    condition_thick = torch.tensor([l_bl_norm], dtype=torch.float32).to(device).unsqueeze(0) # [1, 1]
 
     # 4. Load Model
     model = ConditionalDiffusionModel().to(device)
@@ -122,7 +161,8 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     
     try:
         # Generate all samples at once
-        preds_norm = sample(model, condition_input, num_samples=num_samples, device=device) # [N, 1]
+        # Pass thickness
+        preds_norm = sample(model, condition_input, condition_thick, num_samples=num_samples, device=device) # [N, 1]
         
         for i in range(num_samples):
             pred_val = preds_norm[i]
@@ -134,8 +174,8 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
         print(f"Batch sampling failed (likely OOM), falling back to loop: {e}")
         preds_k = []
         for _ in range(num_samples):
-            pred = sample(model, condition_input, num_samples=1, device=device)
-            k_val = utils.inverse_transform_k(pred, stats)
+            preds_norm = sample(model, condition_input, condition_thick, num_samples=1, device=device)
+            k_val = utils.inverse_transform_k(preds_norm, stats)
             k_val = min(k_val, config.K_MAX_PHYS)
             preds_k.append(k_val)
 
@@ -194,47 +234,44 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     
     k_tensor = torch.tensor(preds_k).float().unsqueeze(1) # [N, 1]
     f_tensor = torch.tensor(target_freqs).float() # [F]
-    
-    # Physics Simulation
-    # Note: Physics model expects inputs on CPU or same device. 
-    # Let's move to CPU for safety as physics might not be fully optimized for GPU batching with numpy/torch mixed ops if any.
-    # Actually tri_layer_model_torch uses torch, so it should be fine.
+
+    # Physics Params
+    kwargs = dict(
+        l_bl=thickness_val,
+        z_sub=config.Z_SUB,
+        c_adh=config.C_ADH,
+        alpha=config.ALPHA_ADH
+    )
     
     with torch.no_grad():
+        # Compute Phase Difference (Ref - Loc)
         # [N, F]
-        sim_phases = tri_layer_model_torch(f_tensor, k_tensor).detach()
+        phase_loc = tri_layer_model_torch(f_tensor, k_tensor, **kwargs).detach()
         
-    sim_phases_np = sim_phases.numpy()
-    
-    # Unwrap phases to avoid visual artifacts (jumps of 360 deg)
-    # np.unwrap works in radians, so convert: deg -> rad -> unwrap -> deg
-    sim_phases_rad = np.deg2rad(sim_phases_np)
-    sim_phases_rad = np.unwrap(sim_phases_rad, axis=1)
-    sim_phases_np = np.rad2deg(sim_phases_rad)
+        # Ref [1, F] -> broadcast
+        # Make sure K_ref matches batch size or relies on broadcasting logic?
+        # tri_layer_model_torch uses K_top.shape[0] as batch size. 
+        # So we should match k_tensor shape for simplicity or just run once and broadcast later.
+        k_ref_tensor = torch.full_like(k_tensor, 1e16)
+        phase_ref = tri_layer_model_torch(f_tensor, k_ref_tensor, **kwargs).detach()
+        
+    phase_loc_np = phase_loc.cpu().numpy()
+    phase_ref_np = phase_ref.cpu().numpy()
 
-    # Center the simulated phases to match the processing of experimental data
-    # (Since we compared centered curves during inference)
-    sim_phases_centered = sim_phases_np - np.mean(sim_phases_np, axis=1, keepdims=True)
+    # Unwrap individually
+    loc_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_loc_np), axis=1))
+    ref_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_ref_np), axis=1))
+    
+    # Difference (Ref - Loc)
+    phase_diff = ref_uw - loc_uw
+    
+    # Center
+    sim_phases_centered = phase_diff - np.mean(phase_diff, axis=1, keepdims=True)
     
     # Calculate stats for curves
     phase_mean = np.mean(sim_phases_centered, axis=0)
     phase_lower = np.percentile(sim_phases_centered, 2.5, axis=0)
     phase_upper = np.percentile(sim_phases_centered, 97.5, axis=0)
-
-    # Scale for visualization if needed (using mean curve)
-    # This mimics the behavior in inference.py verify_curve, but applying the scalar to the whole band might be better
-    # or just plotting raw centered. Let's plot raw centered first to see if it matches.
-    # If the amplitude is way off, we might want to normalize amplitudes.
-    
-    # To be consistent with inference.py, let's just plot the centered data.
-    # But inference.py calculates a scaling factor.
-    # Let's compute the scaling factor based on the MEAN curve and apply it to the bounds for visualization consistency.
-    scaling_factor = (np.max(curve_centered) - np.min(curve_centered)) / \
-                     (np.max(phase_mean) - np.min(phase_mean))
-    
-    phase_mean_scaled = phase_mean * scaling_factor
-    phase_lower_scaled = phase_lower * scaling_factor
-    phase_upper_scaled = phase_upper * scaling_factor
 
     if ax_phase is None:
         plt.figure(figsize=(10, 6))
@@ -243,10 +280,10 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
         ax2 = ax_phase
 
     ax2.plot(target_freqs/1e6, curve_centered, 'k-', linewidth=1.5, label='Exp')
-    ax2.plot(target_freqs/1e6, phase_mean_scaled, 'r--', linewidth=1, label='Pred')
-    ax2.fill_between(target_freqs/1e6, phase_lower_scaled, phase_upper_scaled, color='r', alpha=0.3)
+    ax2.plot(target_freqs/1e6, phase_mean, 'r--', linewidth=1, label='Pred')
+    ax2.fill_between(target_freqs/1e6, phase_lower, phase_upper, color='r', alpha=0.3)
     
-    title_text = f'{filename}' if ax_phase else f"Reconstructed Phase with Uncertainty\n(Scaled to match amplitude)\nReference: {ref_name}"
+    title_text = f'{filename}' if ax_phase else f"Reconstructed Phase with Uncertainty\nReference: {ref_name}"
     ax2.set_title(title_text, fontsize=10 if ax_phase else 12)
     ax2.set_xlabel("Freq (MHz)")
     if ax_phase is None:

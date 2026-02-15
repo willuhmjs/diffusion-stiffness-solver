@@ -30,7 +30,7 @@ def add_noise(x_start, t, device=config.DEVICE):
     x_noisy = sqrt_alpha_bar.view(-1, 1) * x_start + sqrt_one_minus_alpha_bar.view(-1, 1) * noise
     return x_noisy, noise
 
-def sample(model, condition_curve, num_samples=1, device=config.DEVICE):
+def sample(model, condition_curve, condition_thickness, num_samples=1, device=config.DEVICE):
     model.eval()
     betas = BETAS.to(device)
     alphas = ALPHAS.to(device)
@@ -47,12 +47,22 @@ def sample(model, condition_curve, num_samples=1, device=config.DEVICE):
              # If we passed a batch of conditions (e.g. batch size 50), and num_samples is 50, we are good.
              # Only error if they differ and it's not a broadcast case.
              raise ValueError(f"Shape mismatch: condition_curve {condition_curve.shape} vs num_samples {num_samples}")
+             
+        # Handle batching for thickness
+        if config.USE_THICKNESS:
+            if condition_thickness.shape[0] == 1 and num_samples > 1:
+                condition_thickness = condition_thickness.repeat(num_samples, 1)
+            elif condition_thickness.shape[0] != num_samples:
+                 raise ValueError(f"Shape mismatch: condition_thickness {condition_thickness.shape} vs num_samples {num_samples}")
         
         for i in reversed(range(config.TIMESTEPS)):
             t = torch.tensor([i] * num_samples, device=device)
             t_norm = t.float().view(-1, 1) / config.TIMESTEPS
             
-            predicted_noise = model(x, t_norm, condition_curve)
+            if config.USE_THICKNESS:
+                predicted_noise = model(x, t_norm, condition_curve, condition_thickness)
+            else:
+                predicted_noise = model(x, t_norm, condition_curve)
             
             alpha = alphas[i]
             alpha_bar = alphas_cumprod[i]

@@ -112,7 +112,22 @@ def find_specimen_pairs(data_dir):
     
     # Sort for consistency
     found_pairs.sort(key=lambda x: (x['specimen'], int(x['location']), int(x['rep'])))
-    return found_pairs
+    
+    # Deduplicate: preferring CSV over DAT if both exist
+    unique_pairs = {}
+    for p in found_pairs:
+        key = (p['specimen'], p['location'], p['rep'])
+        # If we have a CSV already, keep it. If current is CSV, overwrite DAT. 
+        # If new key, add.
+        if key not in unique_pairs:
+            unique_pairs[key] = p
+        else:
+            current_ext = os.path.splitext(unique_pairs[key]['loc_path'])[1].lower()
+            new_ext = os.path.splitext(p['loc_path'])[1].lower()
+            if new_ext == '.csv' and current_ext != '.csv':
+                unique_pairs[key] = p
+                
+    return list(unique_pairs.values())
 
 def load_stats(device=config.DEVICE):
     """
@@ -145,7 +160,10 @@ def process_experimental_data(freqs, phase_diff, stats=None, target_freqs=None):
     if target_freqs is None:
         target_freqs = np.linspace(config.FREQ_MIN, config.FREQ_MAX, config.NUM_POINTS)
         
-    # Unwrapping: Fix phase jumps > pi (input is radians)
+    # Unwrapping: The callers should have already unwrapped each signal individually
+    # before computing the difference. We still call unwrap here as a safety net
+    # in case there are residual wraps, but the primary unwrapping must happen
+    # on each raw signal BEFORE subtraction.
     phase_diff = np.unwrap(phase_diff)
 
     # Smoothing: Apply Gaussian Filter to reduce noise
@@ -198,4 +216,13 @@ def inverse_transform_k(log_k_norm, stats):
     if isinstance(k_mean, torch.Tensor): k_mean = k_mean.item()
 
     log_real = (log_k_norm * k_std) + k_mean
+    
+    # Clamp log_real to avoid overflow (e.g., max 10^30)
+    # Physically max is 10^16, so log_real should be ~16.
+    # Let's cap at 20 just to be safe from OverflowError in pow
+    if log_real > 20:
+        log_real = 20.0
+    elif log_real < -20: # Cap lower bound too if needed
+        log_real = -20.0
+        
     return 10 ** log_real

@@ -21,6 +21,7 @@ FREQ_MIN = float(cfg.physics.get('freq_min', 0.5e6))
 FREQ_MAX = float(cfg.physics.get('freq_max', 15.0e6))
 NUM_POINTS = int(cfg.physics.get('num_points', 2001))
 DATASET_SIZE = int(cfg.data_generation.get('dataset_size', 5000))
+USE_THICKNESS = cfg.data_generation.get('use_thickness', True)
 
 K_MIN_LOG = float(cfg.physics.get('k_min_log', 12.0))
 K_MAX_LOG = float(cfg.physics.get('k_max_log', 18.0))
@@ -31,6 +32,7 @@ BATCH_SIZE = int(cfg.training.get('batch_size', 64))
 LR = float(cfg.training.get('lr', 2e-4))
 EPOCHS = int(cfg.training.get('epochs', 3000))
 TIMESTEPS = int(cfg.training.get('timesteps', 500))
+PATIENCE = int(cfg.training.get('patience', 300))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- PATHS ---

@@ -21,14 +21,15 @@ physics:
   k_max_phys: 1.0e16
 
 data_generation:
-  dataset_size: 5000
+  dataset_size: 15000
+  use_thickness: true 
   noise:
     enable: true
-    sigma_phase: 0.2
-    drift_factor: 1.0
+    sigma_phase: 0.05
+    drift_factor: 0.5
 
 training:
-  batch_size: 128
+  batch_size: 1024
   lr: 2.0e-4
   epochs: 3000
   timesteps: 500
@@ -36,4 +37,4 @@ training:
 
 paths:
   data_path: "data/processed/training_data.pt"
-  model_path: "checkpoints/model_final.pt"
+  model_path: "checkpoints/model_best.pt"

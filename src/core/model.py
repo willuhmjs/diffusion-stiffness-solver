@@ -59,11 +59,23 @@ class ConditionalDiffusionModel(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         
-        # 3. Denoising Head
-        # Concatenates: [Noisy_K (1) + Curve_Features (hidden) + Time_Info (hidden)]
-        # We increase depth here too for better reasoning
+        # 3. Thickness Embedding
+        if config.USE_THICKNESS:
+            self.thick_mlp = nn.Sequential(
+                nn.Linear(1, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
+            # 4. Denoising Head
+            # Concatenates: [Noisy_K (1) + Curve_Features (hidden) + Time_Info (hidden) + Thickness_Info (hidden)]
+            input_dim = 1 + hidden_dim * 3
+        else:
+            self.thick_mlp = None
+            # Concatenates: [Noisy_K (1) + Curve_Features (hidden) + Time_Info (hidden)]
+            input_dim = 1 + hidden_dim * 2
+
         self.net = nn.Sequential(
-            nn.Linear(1 + hidden_dim * 2, hidden_dim),
+            nn.Linear(input_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -72,8 +84,9 @@ class ConditionalDiffusionModel(nn.Module):
             nn.Linear(hidden_dim // 2, 1) # Output: Predicted Noise
         )
 
-    def forward(self, x, t, condition_curve):
+    def forward(self, x, t, condition_curve, condition_thickness=None):
         # condition_curve: [Batch, Points]
+        # condition_thickness: [Batch, 1] (Optional if not config.USE_THICKNESS)
         
         # Reshape curve for CNN: [Batch, 1, Points]
         if condition_curve.dim() == 2:
@@ -82,8 +95,21 @@ class ConditionalDiffusionModel(nn.Module):
         # Encode
         curve_emb = self.curve_encoder(condition_curve) # [Batch, Hidden]
         t_emb = self.time_mlp(t)                        # [Batch, Hidden]
-        
-        # Concatenate
-        combined = torch.cat([x, curve_emb, t_emb], dim=1)
+
+        if config.USE_THICKNESS:
+            if condition_thickness is None:
+                raise ValueError("Model requires 'condition_thickness' but it was None")
+            
+            # Ensure thickness is [Batch, 1]
+            if condition_thickness.dim() == 1:
+                condition_thickness = condition_thickness.unsqueeze(1)
+
+            thick_emb = self.thick_mlp(condition_thickness) # [Batch, Hidden]
+            
+            # Concatenate
+            combined = torch.cat([x, curve_emb, t_emb, thick_emb], dim=1)
+        else:
+            # Concatenate
+            combined = torch.cat([x, curve_emb, t_emb], dim=1)
         
         return self.net(combined)

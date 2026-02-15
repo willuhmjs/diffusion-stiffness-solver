@@ -124,8 +124,12 @@ def infer_task(loc_path=None, ref_path=None):
 
     # 3. Process
     real_freqs = df_loc['Frequency'].values * 1e6
-    # MATCH BATCH INFERENCE: Ref - Loc
-    raw_phase_diff = df_ref['Phase'].values - df_loc['Phase'].values
+    # Unwrap each signal individually before subtracting (prevents wrapping artifacts)
+    phase_loc_unwrapped = np.unwrap(df_loc['Phase'].values)
+    phase_ref_unwrapped = np.unwrap(df_ref['Phase'].values)
+    # Sign convention: instruments have opposite sign to TMM, so
+    # exp(loc - ref) matches training sim(ref - loc).
+    raw_phase_diff = phase_loc_unwrapped - phase_ref_unwrapped
     
     # Centralized Processing
     curve_tensor, curve_centered, target_freqs = utils.process_experimental_data(real_freqs, raw_phase_diff, stats=stats)
@@ -172,8 +176,18 @@ def infer_task(loc_path=None, ref_path=None):
     # Correction: sample expects [Batch, Points] for condition_curve
     condition_input = curve_norm.squeeze(1) # [1, Points]
 
+    # Normalize thickness
+    l_bl_mean = stats.get('l_bl_mean', 0.0)
+    l_bl_std = stats.get('l_bl_std', 1.0)
+    if isinstance(l_bl_mean, torch.Tensor): l_bl_mean = l_bl_mean.item()
+    if isinstance(l_bl_std, torch.Tensor): l_bl_std = l_bl_std.item()
+    
+    l_bl_norm = (thickness_val - l_bl_mean) / (l_bl_std + 1e-8)
+    condition_thick = torch.tensor([l_bl_norm], dtype=torch.float32).to(device).unsqueeze(0) # [1, 1]
+
     for _ in range(50):
-        pred = sample(model, condition_input, num_samples=1, device=device)
+        # Pass thickness to sample
+        pred = sample(model, condition_input, condition_thick, num_samples=1, device=device)
         k_val = utils.inverse_transform_k(pred, stats)
         
         # --- PHYSICAL CLAMPING ---
@@ -202,61 +216,52 @@ def infer_task(loc_path=None, ref_path=None):
         filename = "default_inference"
         
     save_path = f"results/fit_{filename}.png"
-    verify_curve(mean_k, target_freqs, curve_centered, save_path, ref_name)
+    # Pass resolved thickness to verification
+    verify_curve(mean_k, target_freqs, curve_centered, save_path, ref_name, l_bl=thickness_val)
 
-def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown", k_ref=None):
+def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown", k_ref=None, l_bl=None):
     k_tensor = torch.tensor([k_val]).float()
+    k_ref_bond = torch.tensor([1e16]).float()
     f_tensor = torch.tensor(freqs).float()
     
-    # Physics Sim (AI Pred) - Using 3-Layer Model
-    sim_phase = tri_layer_model_torch(
-        f_tensor,
-        k_tensor,
-        # h_sub is implicit in 3-layer (assumes semi-infinite or uses Z_sub directly)
-        z_sub=config.Z_SUB,
-        l_bl=config.L_BL,
-        c_adh=config.C_ADH,
-        alpha=config.ALPHA_ADH
-    ).detach().numpy().flatten()
-    sim_phase = np.rad2deg(np.unwrap(np.deg2rad(sim_phase)))
-    sim_phase_centered = sim_phase - np.mean(sim_phase)
+    # Use specific thickness if provided, else default
+    l_bl_val = l_bl if l_bl is not None else config.L_BL
 
-    # Scale Sim to match Real Amplitude for visual comparison
-    scaling_factor = (np.max(real_curve_centered) - np.min(real_curve_centered)) / \
-                     (np.max(sim_phase_centered) - np.min(sim_phase_centered))
-    
-    sim_phase_scaled = sim_phase_centered * scaling_factor
+    common_kwargs = dict(
+        z_sub=config.Z_SUB,
+        l_bl=l_bl_val,
+        c_adh=config.C_ADH,
+        alpha=config.ALPHA_ADH,
+    )
+
+    # Physics Sim: Phase DIFFERENCE (ref - loc), matching training convention
+    # Unwrap each individually before subtracting
+    phase_loc = tri_layer_model_torch(f_tensor, k_tensor, **common_kwargs).detach().numpy().flatten()
+    phase_ref = tri_layer_model_torch(f_tensor, k_ref_bond, **common_kwargs).detach().numpy().flatten()
+    loc_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_loc)))
+    ref_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_ref)))
+    sim_diff = ref_uw - loc_uw
+    sim_phase_centered = sim_diff - np.mean(sim_diff)
 
     plt.figure(figsize=(10,6))
     plt.plot(freqs/1e6, real_curve_centered, 'b-', label='Real Data')
-    plt.plot(freqs/1e6, sim_phase_scaled, 'r--', label=f'AI Pred (K={k_val:.1e}) [Scaled]')
+    plt.plot(freqs/1e6, sim_phase_centered, 'r--', label=f'AI Pred (K={k_val:.1e})')
 
     # Reference Sim (Derived from Fracture Energy)
     if k_ref is not None:
         k_ref_tensor = torch.tensor([k_ref]).float()
-        ref_phase = tri_layer_model_torch(
-            f_tensor,
-            k_ref_tensor,
-            z_sub=config.Z_SUB,
-            l_bl=config.L_BL,
-            c_adh=config.C_ADH,
-            alpha=config.ALPHA_ADH
-        ).detach().numpy().flatten()
-        ref_phase = np.rad2deg(np.unwrap(np.deg2rad(ref_phase)))
-        ref_phase_centered = ref_phase - np.mean(ref_phase)
+        ref_loc = tri_layer_model_torch(f_tensor, k_ref_tensor, **common_kwargs).detach().numpy().flatten()
+        ref_ref = tri_layer_model_torch(f_tensor, k_ref_bond, **common_kwargs).detach().numpy().flatten()
+        ref_loc_uw = np.rad2deg(np.unwrap(np.deg2rad(ref_loc)))
+        ref_ref_uw = np.rad2deg(np.unwrap(np.deg2rad(ref_ref)))
+        ref_diff = ref_ref_uw - ref_loc_uw
+        ref_phase_centered = ref_diff - np.mean(ref_diff)
         
-        # Scale Reference using the SAME factor as Prediction (or its own)?
-        # Ideally, we want to compare shapes. Let's scale it to match Real Amplitude too.
-        # This makes visual comparison of *shape* valid.
-        ref_scaling_factor = (np.max(real_curve_centered) - np.min(real_curve_centered)) / \
-                             (np.max(ref_phase_centered) - np.min(ref_phase_centered))
-        ref_phase_scaled = ref_phase_centered * ref_scaling_factor
-        
-        plt.plot(freqs/1e6, ref_phase_scaled, 'g-.', label=f'Ref Trend (K={k_ref:.1e}) [Scaled]')
+        plt.plot(freqs/1e6, ref_phase_centered, 'g-.', label=f'Ref Trend (K={k_ref:.1e})')
 
-    plt.title(f"Shape Verification (Amplitude Scaled for Visual)\nReference: {ref_name}")
+    plt.title(f"Verification (Phase Difference)\nReference: {ref_name}")
     plt.xlabel("Freq (MHz)")
-    plt.ylabel("Phase Deviation")
+    plt.ylabel("Phase Deviation (deg)")
     plt.legend()
     plt.grid(True, alpha=0.3)
     

@@ -90,6 +90,14 @@ def run_inference(results, stats):
             print("  -> Error: No checkpoints found.")
             return
 
+    # Prepare a default normalized thickness (nominal config value)
+    l_bl_mean = stats.get('l_bl_mean', 0.0)
+    l_bl_std = stats.get('l_bl_std', 1.0)
+    if isinstance(l_bl_mean, torch.Tensor): l_bl_mean = l_bl_mean.item()
+    if isinstance(l_bl_std, torch.Tensor): l_bl_std = l_bl_std.item()
+    l_bl_norm = (config.L_BL - l_bl_mean) / (l_bl_std + 1e-8)
+    condition_thick = torch.tensor([l_bl_norm], dtype=torch.float32).to(device).unsqueeze(0) # [1, 1]
+
     for label, data in results.items():
         phase_input = data['model_input']
         
@@ -100,7 +108,7 @@ def run_inference(results, stats):
         condition_input = phase_input.squeeze(1)
 
         for _ in range(10):
-            pred = sample(model, condition_input, num_samples=1, device=device)
+            pred = sample(model, condition_input, condition_thick, num_samples=1, device=device)
             k_val = utils.inverse_transform_k(pred, stats)
             preds_k.append(k_val)
         
@@ -243,9 +251,17 @@ def evaluate_noise_sensitivity(model, stats, device):
             # To Tensor [1, Points]
             condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).unsqueeze(0).to(device)
             
+            # Prepare thickness conditioning (use nominal)
+            l_bl_mean_ns = stats.get('l_bl_mean', 0.0)
+            l_bl_std_ns = stats.get('l_bl_std', 1.0)
+            if isinstance(l_bl_mean_ns, torch.Tensor): l_bl_mean_ns = l_bl_mean_ns.item()
+            if isinstance(l_bl_std_ns, torch.Tensor): l_bl_std_ns = l_bl_std_ns.item()
+            l_bl_norm_ns = (config.L_BL - l_bl_mean_ns) / (l_bl_std_ns + 1e-8)
+            cond_thick_ns = torch.tensor([l_bl_norm_ns], dtype=torch.float32).to(device).unsqueeze(0)
+
             # Inference
             with torch.no_grad():
-                 pred_log_k_norm = sample(model, condition_tensor, num_samples=1, device=device)
+                 pred_log_k_norm = sample(model, condition_tensor, cond_thick_ns, num_samples=1, device=device)
             
             # Inverse Transform
             pred_k = utils.inverse_transform_k(pred_log_k_norm, stats)

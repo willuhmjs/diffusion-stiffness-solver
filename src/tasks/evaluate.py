@@ -39,8 +39,16 @@ def evaluate_parameter_recovery():
     val_data = torch.load(val_path, map_location=device, weights_only=False)
     
     # Unpack Data
+    # Note: If running on old data without thickness, this will fail or need fallback.
+    # Assuming data regeneration as per instructions.
     phase_curves = val_data['phase_curves']
     true_stiffness_norm = val_data['stiffness_values']
+    thickness_values = val_data.get('thickness_values')
+    
+    if thickness_values is None:
+        print("Error: Validation data missing thickness values. Please regenerate data.")
+        return
+        
     stats = val_data['stats']
     
     print(f"Evaluating on {len(phase_curves)} validation samples...")
@@ -71,8 +79,13 @@ def evaluate_parameter_recovery():
     num_samples = len(phase_curves)
     
     print("Running inference...")
-    for i in range(0, num_samples, batch_size):
-        batch_phase = phase_curves[i:i+batch_size].to(device)
+    # Fix infinite loop if range is wrong or batch_size > num_samples
+    num_total = len(phase_curves)
+    for i in range(0, num_total, batch_size):
+        end_idx = min(i+batch_size, num_total)
+        batch_phase = phase_curves[i:end_idx].to(device)
+        batch_thick = thickness_values[i:end_idx].to(device)
+        current_batch_len = end_idx - i
         
         # We only need 1 sample per input for deterministic evaluation or mean of few samples?
         # Diffusion is stochastic. For robust evaluation, we should ideally sample multiple times and take mean.
@@ -82,7 +95,16 @@ def evaluate_parameter_recovery():
         with torch.no_grad():
             # sample returns [Batch, 1]
             # We must pass num_samples = current batch size so the noise vector x matches batch_phase dimensions
-            batch_pred = sample(model, batch_phase, num_samples=len(batch_phase), device=device)
+            # sample function uses num_samples to determine output size if not broadcasting, 
+            # or if broadcasting condition.
+            # Here batch_phase is [Batch, 1, 2001]
+            # Condition thickness is [Batch, 1]
+            # We pass num_samples=current_batch_len
+            
+            if config.USE_THICKNESS:
+                batch_pred = sample(model, batch_phase, batch_thick, num_samples=current_batch_len, device=device)
+            else:
+                batch_pred = sample(model, batch_phase, None, num_samples=current_batch_len, device=device)
             preds_norm.append(batch_pred.cpu())
             
     preds_norm = torch.cat(preds_norm, dim=0).squeeze()

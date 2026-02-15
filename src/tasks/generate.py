@@ -8,7 +8,7 @@ def generate_data_task():
     print("--- GENERATING DATASET (Global Normalization) ---")
     
     # 1. Generate Raw Physics (With Noise)
-    X_raw, Y_raw, _, frequencies = generate_dataset(n_samples=config.DATASET_SIZE)
+    X_raw, Y_raw, _, frequencies, L_raw = generate_dataset(n_samples=config.DATASET_SIZE)
 
     # 2. Pre-Process Phase
     print("Processing Phase Curves...")
@@ -35,10 +35,15 @@ def generate_data_task():
     
     k_mean = Y_log.mean().item()
     k_std = Y_log.std().item()
-    
+
+    # Pre-Process Thickness
+    l_bl_mean = L_raw.mean().item()
+    l_bl_std = L_raw.std().item()
+
     # Apply Normalization
     X_final = (X_centered - phase_mean) / (phase_std + 1e-8)
     Y_final = (Y_log - k_mean) / (k_std + 1e-8)
+    L_final = (L_raw - l_bl_mean) / (l_bl_std + 1e-8)
 
     # 5. Save Statistics for Inference
     stats = {
@@ -46,6 +51,8 @@ def generate_data_task():
         'k_std': k_std,
         'phase_mean': phase_mean,
         'phase_std': phase_std,
+        'l_bl_mean': l_bl_mean,
+        'l_bl_std': l_bl_std,
         'normalization': 'global_standard'
     }
 
@@ -62,6 +69,7 @@ def generate_data_task():
     train_data = {
         'phase_curves': X_final[train_idx],
         'stiffness_values': Y_final[train_idx],
+        'thickness_values': L_final[train_idx],
         'frequencies': frequencies,
         'stats': stats
     }
@@ -69,6 +77,7 @@ def generate_data_task():
     val_data = {
         'phase_curves': X_final[val_idx],
         'stiffness_values': Y_final[val_idx],
+        'thickness_values': L_final[val_idx],
         'frequencies': frequencies,
         'stats': stats
     }

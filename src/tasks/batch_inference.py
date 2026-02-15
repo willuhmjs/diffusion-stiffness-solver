@@ -90,14 +90,20 @@ def simulate_phase(k_val, freqs, physics_params, l_bl_override=None):
         freqs, k_ref, **common_kwargs
     )
     
-    # Phase difference: ref - loc (matches experimental loc - ref sign convention)
-    phase_diff = phase_ref - phase_loc
-    phase_np = phase_diff.detach().cpu().numpy().flatten()
-    
-    # Processing: deg -> rad -> unwrap -> deg -> center
-    phase_rad = np.deg2rad(phase_np)
-    phase_unwrapped = np.unwrap(phase_rad)
-    phase_deg_final = np.rad2deg(phase_unwrapped)
+    # Phase difference: ref - loc (matches training sim convention)
+    # Unwrap each individually before subtracting (same as experimental processing)
+    #
+    # NOTE: Sign Convention
+    # TMM Simulation uses: Ref - Loc
+    # Experiments use: Loc - Ref
+    # These are equivalent because instruments typically use the e^(-iwt) convention
+    # while TMM uses e^(iwt) (or vice versa), causing a global sign flip.
+    # Therefore: Exp(Loc - Ref) == Exp(Loc) - Exp(Ref) == (-TMM(Loc)) - (-TMM(Ref)) == TMM(Ref) - TMM(Loc).
+    phase_loc_np = phase_loc.detach().cpu().numpy().flatten()
+    phase_ref_np = phase_ref.detach().cpu().numpy().flatten()
+    loc_unwrapped = np.rad2deg(np.unwrap(np.deg2rad(phase_loc_np)))
+    ref_unwrapped = np.rad2deg(np.unwrap(np.deg2rad(phase_ref_np)))
+    phase_deg_final = ref_unwrapped - loc_unwrapped
     phase_centered = phase_deg_final - np.mean(phase_deg_final)
     
     return phase_centered
@@ -172,9 +178,21 @@ def run_batch_inference():
             
             real_freqs = df_loc['Frequency'].values * 1e6
             
-            # --- SIGN FLIP DIAGNOSIS ---
-            # Using (Ref - Loc) to flip the sign for experiment:
-            raw_phase_diff = df_ref['Phase'].values - df_loc['Phase'].values
+            # Unwrap each signal INDIVIDUALLY before subtracting.
+            # If we subtract wrapped signals, the difference has non-2pi jumps
+            # that np.unwrap cannot fix (causes jagged/discontinuous curves).
+            phase_loc_unwrapped = np.unwrap(df_loc['Phase'].values)
+            phase_ref_unwrapped = np.unwrap(df_ref['Phase'].values)
+            # Sign convention: instruments have opposite sign to TMM, so
+            # exp(loc - ref) matches training sim(ref - loc).
+            #
+            # Derivation:
+            # Phase_Exp = -Phase_TMM (due to e^-iwt vs e^iwt convention)
+            # Exp(Loc - Ref) = Exp(Loc) - Exp(Ref)
+            #                = (-TMM(Loc)) - (-TMM(Ref))
+            #                = TMM(Ref) - TMM(Loc)
+            #                = TMM(Ref - Loc) -> Matches Training Input
+            raw_phase_diff = phase_loc_unwrapped - phase_ref_unwrapped
             
             # Process for Model
             curve_tensor, curve_centered, target_freqs = utils.process_experimental_data(
@@ -189,11 +207,32 @@ def run_batch_inference():
                 print(f"  -> Skipped: Low amplitude ({ptp:.2f} deg)")
                 continue
 
+            # --- PREPARE THICKNESS ---
+            # Used determined thickness or default if not found
+            l_bl_real = h_loc if h_loc is not None else config_data['physics']['l_bl']
+            
+            # Normalize thickness
+            # Note: Stats will now include l_bl_mean/std after regeneration
+            # If standardizing: (val - mean) / std
+            if 'l_bl_mean' in stats and 'l_bl_std' in stats:
+                l_bl_mean = stats['l_bl_mean']
+                l_bl_std = stats['l_bl_std']
+                if isinstance(l_bl_mean, torch.Tensor): l_bl_mean = l_bl_mean.item()
+                if isinstance(l_bl_std, torch.Tensor): l_bl_std = l_bl_std.item()
+                
+                l_bl_norm = (l_bl_real - l_bl_mean) / (l_bl_std + 1e-8)
+            else:
+                # Fallback if using old stats without thickness info (shouldn't happen if workflow followed)
+                print("Warning: Thickness stats not found. Using raw value (likely to fail/perform poorly).")
+                l_bl_norm = l_bl_real # This would likely break things if model expects normalized
+            
+            thick_tensor = torch.tensor([l_bl_norm], dtype=torch.float32).to(device).unsqueeze(0) # [1, 1]
+
             # --- RUN MODEL ---
             cond = curve_tensor.to(device).unsqueeze(0)
             
             # inference.py samples 50 times.
-            preds = sample(model, cond, num_samples=50, device=device)
+            preds = sample(model, cond, thick_tensor, num_samples=50, device=device)
             k_vals = [utils.inverse_transform_k(p, stats) for p in preds]
             
             # Apply clamping
@@ -229,16 +268,12 @@ def run_batch_inference():
             os.makedirs('results/fits', exist_ok=True)
             fit_path = os.path.join('results/fits', f"fit_{task['specimen']}_Loc{task['location']}.png")
             
-            # Scaling for visual verification (like in inference.py)
-            scaling_factor = (np.max(curve_centered) - np.min(curve_centered)) / \
-                             (np.max(sim) - np.min(sim)) if (np.max(sim) - np.min(sim)) > 1e-6 else 1.0
-            
-            sim_scaled = sim * scaling_factor
+            # No synthetic scaling - validation must be honest!
 
             plt.figure(figsize=(10,6))
             plt.plot(target_freqs/1e6, curve_centered, 'b-', label='Real Data')
-            # Plot Scaled AI Pred like inference.py
-            plt.plot(target_freqs/1e6, sim_scaled, 'r--', label=f'AI Pred (K={mean_k:.1e}) [Scaled]')
+            # Plot AI Pred (Unscaled)
+            plt.plot(target_freqs/1e6, sim, 'r--', label=f'AI Pred (K={mean_k:.1e})')
             
             plt.title(f"Model Fit\nSpecimen {task['specimen']} Loc {task['location']}\nThickness: {real_thickness if real_thickness else 'Default'}")
             plt.xlabel("Freq (MHz)")

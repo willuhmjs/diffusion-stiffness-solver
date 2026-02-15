@@ -21,8 +21,10 @@ The core architecture uses a **Conditional Diffusion Model** (Conditioned on 1D 
     pip install -r requirements.txt
     ```
 
+    *Note: If you have conflicting CUDA versions, standard torch installation is usually sufficient.*
+
 2.  **Run Full Pipeline (Recommended):**
-    This uses the default configuration for GenericAlloy/GenericAdhesive materials.
+    This automates the entire process: Generation -> Training -> Verification -> Uncertainty Analysis.
     ```bash
     python3 src/main.py pipeline
     ```

@@ -179,8 +179,8 @@ def generate_dataset(n_samples=1000, asymmetric=True, device=config.DEVICE):
     K_top = 10 ** log_k
 
     if asymmetric:
-        # Bottom interface varies independently within ±1 decade
-        delta = torch.FloatTensor(n_samples, 1).uniform_(-1.0, 1.0).to(device)
+        # Bottom interface varies independently within ±0.5 decade (Reduced from ±1.0 to improve identifiability)
+        delta = torch.FloatTensor(n_samples, 1).uniform_(-0.5, 0.5).to(device)
         K_bottom = K_top * (10 ** delta)
     else:
         K_bottom = K_top
@@ -238,4 +238,4 @@ def generate_dataset(n_samples=1000, asymmetric=True, device=config.DEVICE):
 
     phase_noisy = add_noise(phase_diff, freqs)
 
-    return phase_noisy, K_top, K_bottom, freqs
+    return phase_noisy, K_top, K_bottom, freqs, l_bl
