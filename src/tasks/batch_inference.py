@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import re
+from tqdm import tqdm
+import sys
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -148,8 +150,10 @@ def run_batch_inference():
     results = []
     
     # 4. Processing Loop
-    for i, task in enumerate(tasks):
-        print(f"[{i+1}/{len(tasks)}] Processing {task['specimen']} Location {task['location']} (File: {task['filename']})...")
+    pbar = tqdm(tasks, desc="Processing Files", unit="file")
+    for task in pbar:
+        # print(f"[{i+1}/{len(tasks)}] Processing {task['specimen']} Location {task['location']} (File: {task['filename']})...")
+        pbar.set_description(f"Proc: {task['specimen']} Loc {task['location']}")
         
         try:
             # Determine Thickness Information

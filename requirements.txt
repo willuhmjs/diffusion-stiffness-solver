@@ -5,3 +5,4 @@ torch
 scipy
 PyYAML
 seaborn
+tqdm

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import argparse
+from tqdm import tqdm
 import src.core.config as config
 import src.core.utils as utils
 from src.core.model import ConditionalDiffusionModel
@@ -112,22 +113,23 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
         thickness_val = 0.0002
     
     # Try metadata
-    try:
-        meta_path = 'data/metadata/specimen_properties.csv'
-        if os.path.exists(meta_path):
-            df_meta = pd.read_csv(meta_path)
-            import re
-            match = re.search(r"Spec(\d+)_Loc(\d+)", target_filename, re.IGNORECASE)
-            if match:
-                s_num = int(match.group(1))
-                l_num = int(match.group(2))
-                row = df_meta[(df_meta['Specimen'] == s_num) & (df_meta['Location'] == l_num)]
-                if not row.empty:
-                     col_name = 'Thickness_m' if 'Thickness_m' in df_meta.columns else 'Thickness, m'
-                     thickness_val = row.iloc[0][col_name]
-                     print(f"Using metadata thickness: {thickness_val*1e6:.1f} um")
-    except Exception as e:
-        print(f"Thickness lookup failed: {e}")
+    if config.USE_THICKNESS:
+        try:
+            meta_path = 'data/metadata/specimen_properties.csv'
+            if os.path.exists(meta_path):
+                df_meta = pd.read_csv(meta_path)
+                import re
+                match = re.search(r"Spec(\d+)_Loc(\d+)", target_filename, re.IGNORECASE)
+                if match:
+                    s_num = int(match.group(1))
+                    l_num = int(match.group(2))
+                    row = df_meta[(df_meta['Specimen'] == s_num) & (df_meta['Location'] == l_num)]
+                    if not row.empty:
+                        col_name = 'Thickness_m' if 'Thickness_m' in df_meta.columns else 'Thickness, m'
+                        thickness_val = row.iloc[0][col_name]
+                        print(f"Using metadata thickness: {thickness_val*1e6:.1f} um")
+        except Exception as e:
+            print(f"Thickness lookup failed: {e}")
 
     l_bl_mean = stats.get('l_bl_mean', 0.0)
     l_bl_std = stats.get('l_bl_std', 1.0)
@@ -153,15 +155,18 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     print("Generating samples...")
     preds_k = []
     
-    # We can batch the sampling if the model and GPU memory allow, 
+    # We can batch the sampling if the model and GPU memory allow,
     # but the sample function iterates over timesteps, so for safety we loop or use small batches.
     # The current sample function takes num_samples.
-    # Let's try to run all samples in one go if it fits in memory (100 is small), 
+    # Let's try to run all samples in one go if it fits in memory (100 is small),
     # otherwise we can chunk it.
     
     try:
         # Generate all samples at once
         # Pass thickness
+        # NOTE: sample() itself could use a progress bar for timesteps if we modify diffusion.py,
+        # but for now we just show we are sampling.
+        print(f"Sampling {num_samples} values (batch mode)...")
         preds_norm = sample(model, condition_input, condition_thick, num_samples=num_samples, device=device) # [N, 1]
         
         for i in range(num_samples):
@@ -173,7 +178,7 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     except RuntimeError as e:
         print(f"Batch sampling failed (likely OOM), falling back to loop: {e}")
         preds_k = []
-        for _ in range(num_samples):
+        for _ in tqdm(range(num_samples), desc="Sampling", unit="sample"):
             preds_norm = sample(model, condition_input, condition_thick, num_samples=1, device=device)
             k_val = utils.inverse_transform_k(preds_norm, stats)
             k_val = min(k_val, config.K_MAX_PHYS)

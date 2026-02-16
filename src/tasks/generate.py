@@ -8,6 +8,11 @@ def generate_data_task():
     print("--- GENERATING DATASET (Global Normalization) ---")
     
     # 1. Generate Raw Physics (With Noise)
+    print("Simulating Physics Models...")
+    # Since generate_dataset is vectorized, we wrap the call or just add a spinner/message.
+    # For now, we'll just let it run (it's usually fast on GPU).
+    # If we want a progress bar for generation, we'd need to batch it inside generate_dataset,
+    # but that's a core change. We will stick to high-level progress.
     X_raw, Y_raw, _, frequencies, L_raw = generate_dataset(n_samples=config.DATASET_SIZE)
 
     # 2. Pre-Process Phase

@@ -2,11 +2,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
+import sys
 import csv
 import src.core.config as config
 from src.core.model import ConditionalDiffusionModel
 from src.core.diffusion import add_noise
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm import tqdm
 
 def train_model():
     device = config.DEVICE
@@ -63,7 +65,8 @@ def train_model():
     # Strategy: Save best model based on VALIDATION loss.
     # Improve: Iterate through full dataset using simple shuffles
     
-    for epoch in range(config.EPOCHS):
+    epoch_pbar = tqdm(range(config.EPOCHS), desc="Training", unit="epoch")
+    for epoch in epoch_pbar:
         # --- TRAIN ---
         model.train()
         train_losses = []
@@ -149,8 +152,17 @@ def train_model():
             writer.writerow([epoch, train_loss, val_loss, lr_curr])
             
         # Console Output
+        # Update progress bar description with metrics
+        epoch_pbar.set_postfix({
+            'loss': f"{train_loss:.5f}",
+            'val_loss': f"{val_loss:.5f}",
+            'best': f"{min_val_loss:.5f}",
+            'lr': f"{lr_curr:.2e}"
+        })
+        
         if epoch % 100 == 0:
-            print(f"Epoch {epoch:<4} | Train Loss: {train_loss:.5f} | Val Loss: {val_loss:.5f} | Best Val: {min_val_loss:.5f} | LR: {lr_curr:.2e}")
+            # Keep occasional print for long history if needed, or rely on tqdm
+            pass # tqdm handles the live update
 
     # Save Final
     torch.save(model.state_dict(), final_path)
