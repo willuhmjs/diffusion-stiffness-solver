@@ -39,6 +39,10 @@ def train_model():
 
     # 2. Model & Optimizer
     model = ConditionalDiffusionModel().to(device)
+    if device == 'cuda' and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+        model = nn.DataParallel(model)
+    
     optimizer = optim.Adam(model.parameters(), lr=config.LR)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=200)
     loss_fn = nn.MSELoss()
@@ -138,7 +142,11 @@ def train_model():
         if val_loss < min_val_loss:
             min_val_loss = val_loss
             epochs_without_improvement = 0
-            torch.save(model.state_dict(), best_path)
+            # Unwrap model if using DataParallel
+            if isinstance(model, nn.DataParallel):
+                torch.save(model.module.state_dict(), best_path)
+            else:
+                torch.save(model.state_dict(), best_path)
         else:
             epochs_without_improvement += 1
         
@@ -165,7 +173,10 @@ def train_model():
             pass # tqdm handles the live update
 
     # Save Final
-    torch.save(model.state_dict(), final_path)
+    if isinstance(model, nn.DataParallel):
+        torch.save(model.module.state_dict(), final_path)
+    else:
+        torch.save(model.state_dict(), final_path)
     print(f"\nTraining Complete.")
     print(f"Best Validation Loss: {min_val_loss:.5f} (Saved to {best_path})")
     print(f"Log saved to {log_path}")
