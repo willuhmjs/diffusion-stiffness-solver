@@ -22,18 +22,18 @@ physics:
 
 data_generation:
   dataset_size: 15000
-  use_thickness: true 
+  use_thickness: false
   noise:
     enable: true
-    sigma_phase: 0.05
+    sigma_phase: 0.08
     drift_factor: 0.5
 
 training:
-  batch_size: 1024
+  batch_size: 512
   lr: 2.0e-4
-  epochs: 3000
+  epochs: 2500
   timesteps: 500
-  patience: 300
+  patience: 125
 
 paths:
   data_path: "data/processed/training_data.pt"
