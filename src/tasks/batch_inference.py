@@ -106,7 +106,7 @@ def simulate_phase(k_val, freqs, physics_params, l_bl_override=None):
     loc_unwrapped = np.rad2deg(np.unwrap(np.deg2rad(phase_loc_np)))
     ref_unwrapped = np.rad2deg(np.unwrap(np.deg2rad(phase_ref_np)))
     phase_deg_final = ref_unwrapped - loc_unwrapped
-    phase_centered = phase_deg_final - np.mean(phase_deg_final)
+    phase_centered = phase_deg_final
     
     return phase_centered
 
@@ -207,6 +207,7 @@ def run_batch_inference():
             
             # Check Quality
             ptp = curve_centered.max() - curve_centered.min()
+            print(f"  -> Specimen {task['specimen']} Loc {task['location']} PtP Phase Amplitude: {ptp:.2f} deg, Mean Abs Diff: {np.mean(np.abs(curve_centered)):.2f} deg")
             if ptp < 0.5:
                 print(f"  -> Skipped: Low amplitude ({ptp:.2f} deg)")
                 continue

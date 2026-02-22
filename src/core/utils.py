@@ -176,8 +176,8 @@ def process_experimental_data(freqs, phase_diff, stats=None, target_freqs=None):
     # Convert to degrees (training data is in degrees)
     curve_deg = np.rad2deg(curve_rad)
     
-    # Center per-curve (remove mean offset, matching training preprocessing)
-    curve_centered_deg = curve_deg - np.mean(curve_deg)
+    # Do NOT center per-curve (preserve absolute phase shift)
+    curve_centered_deg = curve_deg
     
     # Normalize using GLOBAL stats (same as training)
     if stats is not None and 'phase_mean' in stats and 'phase_std' in stats:
@@ -194,7 +194,7 @@ def process_experimental_data(freqs, phase_diff, stats=None, target_freqs=None):
         # Instance Normalize (Fallback) - Not recommended
         print("Warning: No Global Stats provided. Using Instance Normalization (may reduce accuracy).")
         curve_std = np.std(curve_deg)
-        curve_norm = (curve_deg - np.mean(curve_deg)) / (curve_std + 1e-8)
+        curve_norm = (curve_deg) / (curve_std + 1e-8)
     
     # Convert to Tensor
     curve_tensor = torch.tensor(curve_norm, dtype=torch.float32)

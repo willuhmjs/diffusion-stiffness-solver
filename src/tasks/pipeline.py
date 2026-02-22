@@ -146,8 +146,11 @@ def run_pipeline():
                 axes_k_flat[i].axis('off')
                 axes_p_flat[i].axis('off')
             
-            fig_k.tight_layout()
-            fig_p.tight_layout()
+            try:
+                fig_k.tight_layout()
+                fig_p.tight_layout()
+            except Exception as e:
+                print(f"Warning: tight_layout failed: {e}")
             
             os.makedirs("results", exist_ok=True)
             fig_k.savefig('results/uncertainty_summary_k_dist.png')

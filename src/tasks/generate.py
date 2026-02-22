@@ -28,14 +28,9 @@ def generate_data_task():
     Y_log = torch.log10(Y_raw)
 
     # 4. GLOBAL STANDARDIZATION
-    # First: center each curve by removing its mean (removes absolute phase offset).
-    # This matches how experimental data is processed (phase difference has arbitrary offset).
-    # The model learns from the SHAPE of the phase curve, not the absolute level.
-    curve_means = X_deg.mean(dim=1, keepdim=True)
-    X_centered = X_deg - curve_means
+    X_centered = X_deg
     
-    # Then: compute global stats on centered curves
-    phase_mean = X_centered.mean().item()  # Should be ~0
+    phase_mean = X_centered.mean().item()
     phase_std = X_centered.std().item()
     
     k_mean = Y_log.mean().item()
@@ -94,9 +89,6 @@ def generate_data_task():
     base, ext = os.path.splitext(data_path)
     train_path = f"{base}_train{ext}"
     val_path = f"{base}_val{ext}"
-    # Task says "split the generated data". We'll save train.pt and val.pt.
-    # We can also keep training_data.pt if config relies on it, but config likely points to one file.
-    # We'll update train.py to look for these.
     
     torch.save({'stats': stats}, data_path) # Saving just stats or full data? utils.load_stats expects 'stats' key
     torch.save(train_data, train_path)
