@@ -201,8 +201,8 @@ def evaluate_noise_sensitivity(model, stats, device):
     print("\n--- 5. NOISE SENSITIVITY ANALYSIS ---")
     
     # Parameters
-    k_true = 1.0e14  # Fixed Ground Truth Stiffness
-    noise_levels = np.linspace(0.0, 0.5, 11)  # Sigma levels
+    k_true = 1.0e13  # Fixed Ground Truth Stiffness
+    noise_levels = np.linspace(0.0, 20.0, 11)  # Sigma levels in degrees
     num_samples = 20  # Samples per noise level for distribution
     
     print(f"  -> Target Stiffness: {k_true:.2e} N/m^3")
@@ -295,8 +295,8 @@ def evaluate_noise_sensitivity(model, stats, device):
     plt.fill_between(noise_levels, cis_lower, cis_upper, color='b', alpha=0.2, label='95% Confidence Interval')
     
     plt.yscale('log')
-    plt.ylim(1e13, 1e15)
-    plt.xlabel('Input Noise Level (Sigma)')
+    plt.ylim(1e11, 1e16)
+    plt.xlabel('Input Noise Level (Sigma in Degrees)')
     plt.ylabel('Predicted Stiffness (N/m^3)')
     plt.title(f'Noise Sensitivity Analysis\nTarget K={k_true:.1e}, Thickness={thickness_um:.1f} um')
     plt.legend()
