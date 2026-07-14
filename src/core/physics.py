@@ -145,21 +145,33 @@ def tri_layer_model_torch(
 
 def add_noise(phase_curves, frequencies):
     """
-    Injects realistic sensor noise: Gaussian Noise + Baseline Drift
+    Injects realistic sensor noise: Gaussian Noise + Baseline Drift.
+
+    Noise magnitude is drawn per-sample from [0, max] rather than applying the
+    same fixed sigma/drift to every training example. A fixed noise level gives
+    the model no signal to learn the relationship between how noisy a curve
+    looks and how uncertain its prediction should be, so its predictive
+    uncertainty ends up decoupled from (and can even invert relative to) the
+    actual input noise at inference time. Randomizing it per-sample exposes
+    the model to a spread of SNRs so it learns calibrated, noise-dependent
+    uncertainty.
     """
     noise_cfg = cfg.data_generation.get('noise', {})
     if not noise_cfg.get('enable', False):
         return phase_curves
 
     batch_size, num_points = phase_curves.shape
-    
-    # 1. Gaussian Noise (High Frequency)
-    sigma = noise_cfg.get('sigma_phase', 0.1)
+
+    # 1. Gaussian Noise (High Frequency) - per-sample sigma in [0, sigma_phase]
+    max_sigma = noise_cfg.get('sigma_phase', 0.1)
+    sigma = torch.rand(batch_size, 1, device=phase_curves.device) * max_sigma
     gaussian_noise = torch.randn_like(phase_curves) * sigma
-    
+
     # 2. Baseline Drift (Low Frequency)
-    # Simulates coupling wobble using a Sine wave with random phase/period
-    drift_mag = noise_cfg.get('drift_factor', 1.0)
+    # Simulates coupling wobble using a Sine wave with random phase/period.
+    # Per-sample magnitude in [0, drift_factor], same reasoning as above.
+    max_drift = noise_cfg.get('drift_factor', 1.0)
+    drift_mag = torch.rand(batch_size, 1, device=phase_curves.device) * max_drift
     
     # Random drift period between 1/2 and 2x the bandwidth
     t = torch.linspace(0, 1, num_points, device=phase_curves.device).unsqueeze(0).expand(batch_size, -1)

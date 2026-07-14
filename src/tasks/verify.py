@@ -5,6 +5,7 @@ import src.core.config as config
 from src.core.physics import tri_layer_model_torch, get_frequencies
 from src.core.model import ConditionalDiffusionModel
 from src.core.diffusion import sample
+from src.core.config_loader import cfg
 import src.core.utils as utils
 import os
 
@@ -42,8 +43,14 @@ def get_theoretical_curves():
         phase_unwrapped = np.unwrap(np.deg2rad(raw_phase_diff))
         phase_deg = np.rad2deg(phase_unwrapped)
         
-        # Center per-curve (matching generate.py: X_centered = X_deg - curve_means)
-        phase_centered = phase_deg - np.mean(phase_deg)
+        # Do NOT center per-curve: generate.py's "X_centered = X_deg" is a plain
+        # alias, not a per-curve mean subtraction — only a single global scalar
+        # mean/std (across the whole dataset) is subtracted at training time.
+        # Per-curve centering here would strip the absolute phase level, which
+        # is exactly the signal the model uses to distinguish stiffness values,
+        # and would desync this synthetic self-check from what the model was
+        # actually trained on.
+        phase_centered = phase_deg
         
         # Normalize with global stats (matching generate.py: X_final = (X_centered - phase_mean) / phase_std)
         phase_mean_val = 0.0
@@ -202,11 +209,26 @@ def evaluate_noise_sensitivity(model, stats, device):
     
     # Parameters
     k_true = 1.0e14  # Fixed Ground Truth Stiffness
-    noise_levels = np.linspace(0.0, 0.5, 11)  # Sigma levels
-    num_samples = 20  # Samples per noise level for distribution
-    
+    num_samples = 300  # Samples per noise level for distribution (batched, so cheap)
+
+    # Sweep noise as a fraction of the noise the model was actually trained on
+    # (data_generation.noise.{sigma_phase,drift_factor} in config), from clean
+    # up to 1.5x that level. The two earlier attempts at this plot injected
+    # only a tiny (0-0.5 deg) independent Gaussian jitter — negligible next to
+    # the ~164 deg global phase_std, and additionally the model's global
+    # average pooling averages i.i.d point noise down to near-nothing, so no
+    # noise level in that range could ever visibly change the output. Scaling
+    # to the trained noise budget, and including the same low-frequency
+    # baseline-drift component used during training (which pooling can't
+    # average away), actually exercises the noise the model learned to be
+    # uncertain about.
+    noise_cfg = cfg.data_generation.get('noise', {})
+    max_sigma_cfg = noise_cfg.get('sigma_phase', 0.08)
+    max_drift_cfg = noise_cfg.get('drift_factor', 0.5)
+    noise_levels = np.linspace(0.0, 1.5, 11)  # Fraction of configured training noise
+
     print(f"  -> Target Stiffness: {k_true:.2e} N/m^3")
-    print(f"  -> Noise Levels: {noise_levels}")
+    print(f"  -> Noise Levels (x configured sensor noise): {noise_levels}")
 
     # Generate Clean Curve (Phase Difference, matching training)
     freqs = get_frequencies().to(device)
@@ -235,40 +257,48 @@ def evaluate_noise_sensitivity(model, stats, device):
     
     model.eval()
     
-    for sigma in noise_levels:
-        preds_k = []
-        
-        # Run multiple samples to get distribution
-        for _ in range(num_samples):
-            # Add Noise
-            noise = np.random.normal(0, sigma, phase_deg_clean.shape)
-            phase_noisy = phase_deg_clean + noise
-            
-            # Center per-curve then normalize with global stats
-            phase_centered = phase_noisy - np.mean(phase_noisy)
-            phase_norm = (phase_centered - phase_mean) / (phase_std + 1e-8)
-            
-            # To Tensor [1, Points]
-            condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).unsqueeze(0).to(device)
-            
-            # Prepare thickness conditioning (use nominal)
-            l_bl_mean_ns = stats.get('l_bl_mean', 0.0)
-            l_bl_std_ns = stats.get('l_bl_std', 1.0)
-            if isinstance(l_bl_mean_ns, torch.Tensor): l_bl_mean_ns = l_bl_mean_ns.item()
-            if isinstance(l_bl_std_ns, torch.Tensor): l_bl_std_ns = l_bl_std_ns.item()
-            l_bl_norm_ns = (config.L_BL - l_bl_mean_ns) / (l_bl_std_ns + 1e-8)
-            cond_thick_ns = torch.tensor([l_bl_norm_ns], dtype=torch.float32).to(device).unsqueeze(0)
+    # Nominal thickness conditioning (shared across all draws/noise levels)
+    l_bl_mean_ns = stats.get('l_bl_mean', 0.0)
+    l_bl_std_ns = stats.get('l_bl_std', 1.0)
+    if isinstance(l_bl_mean_ns, torch.Tensor): l_bl_mean_ns = l_bl_mean_ns.item()
+    if isinstance(l_bl_std_ns, torch.Tensor): l_bl_std_ns = l_bl_std_ns.item()
+    l_bl_norm_ns = (config.L_BL - l_bl_mean_ns) / (l_bl_std_ns + 1e-8)
 
-            # Inference
-            with torch.no_grad():
-                 pred_log_k_norm = sample(model, condition_tensor, cond_thick_ns, num_samples=1, device=device)
-            
-            # Inverse Transform
-            pred_k = utils.inverse_transform_k(pred_log_k_norm, stats)
-            preds_k.append(pred_k)
-            
+    num_points = phase_deg_clean.shape[0]
+    t_axis = np.linspace(0, 1, num_points)
+
+    for level in noise_levels:
+        # Draw `num_samples` independent noisy realizations of the curve, then
+        # run the reverse diffusion process on all of them as a single batch
+        # instead of looping one sample at a time (same result, ~num_samples x
+        # fewer sequential 500-step diffusion passes).
+        sigma_phase = level * max_sigma_cfg
+        drift_mag = level * max_drift_cfg
+
+        gaussian_noise = np.random.normal(0, sigma_phase, (num_samples, num_points))
+
+        # Same low-frequency baseline-drift model as physics.add_noise: a sine
+        # wave with random period (0.5-2.5 cycles) and phase per draw.
+        drift_freq = np.random.uniform(0.5, 2.5, (num_samples, 1))
+        drift_phase = np.random.uniform(0, 2 * np.pi, (num_samples, 1))
+        drift = drift_mag * np.sin(2 * np.pi * drift_freq * t_axis[None, :] + drift_phase)
+
+        phase_noisy = phase_deg_clean[None, :] + gaussian_noise + drift
+
+        # Do NOT center per-curve (see get_theoretical_curves above / utils.
+        # process_experimental_data) — training preserves each curve's
+        # absolute phase level via global standardization only.
+        phase_norm = (phase_noisy - phase_mean) / (phase_std + 1e-8)
+
+        condition_tensor = torch.tensor(phase_norm, dtype=torch.float32).to(device)  # [N, Points]
+        cond_thick_ns = torch.full((num_samples, 1), l_bl_norm_ns, dtype=torch.float32).to(device)
+
+        with torch.no_grad():
+            pred_log_k_norm = sample(model, condition_tensor, cond_thick_ns, num_samples=num_samples, device=device)
+
+        preds_k = np.array([utils.inverse_transform_k(p, stats) for p in pred_log_k_norm])
+
         # Calculate Stats
-        preds_k = np.array(preds_k)
         mean_k = np.mean(preds_k)
         
         # 95% CI
@@ -279,7 +309,7 @@ def evaluate_noise_sensitivity(model, stats, device):
         cis_lower.append(lower)
         cis_upper.append(upper)
         
-        print(f"  -> Sigma {sigma:.2f}: Mean K={mean_k:.2e} [{lower:.2e}, {upper:.2e}]")
+        print(f"  -> Noise {level:.2f}x (sigma={sigma_phase:.3f} deg, drift={drift_mag:.3f} deg): Mean K={mean_k:.2e} [{lower:.2e}, {upper:.2e}]")
 
     # Plot
     plt.figure(figsize=(10, 6))
@@ -296,7 +326,7 @@ def evaluate_noise_sensitivity(model, stats, device):
     
     plt.yscale('log')
     plt.ylim(1e13, 1e15)
-    plt.xlabel('Input Noise Level (Sigma)')
+    plt.xlabel('Input Noise Level (x configured sensor noise)')
     plt.ylabel('Predicted Stiffness (N/m^3)')
     plt.title(f'Noise Sensitivity Analysis\nTarget K={k_true:.1e}, Thickness={thickness_um:.1f} um')
     plt.legend()

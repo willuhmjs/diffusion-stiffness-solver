@@ -44,7 +44,9 @@ def train_model():
         model = nn.DataParallel(model)
     
     optimizer = optim.Adam(model.parameters(), lr=config.LR)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=200)
+    # Patience must be well below the early-stop patience, otherwise early stopping
+    # always fires first and the LR never actually gets reduced.
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=30)
     loss_fn = nn.MSELoss()
     
     # Setup Checkpoints
@@ -103,6 +105,7 @@ def train_model():
             # Backprop
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
         
         train_loss = sum(train_losses) / len(train_losses)
@@ -115,24 +118,31 @@ def train_model():
         
         model.eval()
         with torch.no_grad():
-            # Full validation evaluation for stable loss estimate
-            val_losses = []
-            for vi in range(0, len(val_phase), config.BATCH_SIZE):
-                val_phase_batch = val_phase[vi:vi+config.BATCH_SIZE]
-                val_stiffness_batch = val_stiffness[vi:vi+config.BATCH_SIZE]
-                val_thickness_batch = val_thickness[vi:vi+config.BATCH_SIZE]
-                batch_len = len(val_phase_batch)
-                
-                t_val = torch.randint(0, config.TIMESTEPS, (batch_len,), device=device)
-                noisy_stiffness_val, noise_val = add_noise(val_stiffness_batch, t_val, device=device)
-                t_norm_val = t_val.view(-1, 1).float() / config.TIMESTEPS
-                
-                if config.USE_THICKNESS:
-                    predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch, val_thickness_batch)
-                else:
-                    predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch)
-                val_losses.append(loss_fn(noise_val, predicted_noise_val).item() * batch_len)
-            val_loss = sum(val_losses) / len(val_phase)
+            # Full validation evaluation for stable loss estimate.
+            # A single random (t, noise) draw per example makes val_loss a
+            # high-variance estimate (some epochs get an "easy" draw of mostly
+            # low/high t and spike or dip by 10-100x for no real reason), which
+            # both destabilizes the LR scheduler and can trip early stopping on
+            # a lucky-not-good epoch. Average several independent draws instead.
+            n_val_repeats = 5
+            val_loss_sum = 0.0
+            for _ in range(n_val_repeats):
+                for vi in range(0, len(val_phase), config.BATCH_SIZE):
+                    val_phase_batch = val_phase[vi:vi+config.BATCH_SIZE]
+                    val_stiffness_batch = val_stiffness[vi:vi+config.BATCH_SIZE]
+                    val_thickness_batch = val_thickness[vi:vi+config.BATCH_SIZE]
+                    batch_len = len(val_phase_batch)
+
+                    t_val = torch.randint(0, config.TIMESTEPS, (batch_len,), device=device)
+                    noisy_stiffness_val, noise_val = add_noise(val_stiffness_batch, t_val, device=device)
+                    t_norm_val = t_val.view(-1, 1).float() / config.TIMESTEPS
+
+                    if config.USE_THICKNESS:
+                        predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch, val_thickness_batch)
+                    else:
+                        predicted_noise_val = model(noisy_stiffness_val, t_norm_val, val_phase_batch)
+                    val_loss_sum += loss_fn(noise_val, predicted_noise_val).item() * batch_len
+            val_loss = val_loss_sum / (len(val_phase) * n_val_repeats)
         
         # Step Scheduler (monitor validation loss)
         scheduler.step(val_loss)
