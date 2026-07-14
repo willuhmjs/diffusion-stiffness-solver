@@ -269,9 +269,12 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     
     # Difference (Ref - Loc)
     phase_diff = ref_uw - loc_uw
-    
-    # Center
-    sim_phases_centered = phase_diff - np.mean(phase_diff, axis=1, keepdims=True)
+
+    # Do NOT center per-curve: the experimental overlay (curve_centered, from
+    # utils.process_experimental_data) preserves its absolute phase level, so
+    # the reconstructed simulated curves must too, otherwise "Exp" and "Pred"
+    # are drawn with a constant vertical offset even for a perfect fit.
+    sim_phases_centered = phase_diff
     
     # Calculate stats for curves
     phase_mean = np.mean(sim_phases_centered, axis=0)
@@ -292,7 +295,7 @@ def uncertainty_task(loc_path=None, ref_path=None, num_samples=100, ax_k=None, a
     ax2.set_title(title_text, fontsize=10 if ax_phase else 12)
     ax2.set_xlabel("Freq (MHz)")
     if ax_phase is None:
-        ax2.set_ylabel("Phase (Centered)")
+        ax2.set_ylabel("Phase Difference (deg)")
         ax2.legend()
         
     ax2.grid(True, alpha=0.3)

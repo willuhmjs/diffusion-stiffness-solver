@@ -241,7 +241,11 @@ def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown
     loc_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_loc)))
     ref_uw = np.rad2deg(np.unwrap(np.deg2rad(phase_ref)))
     sim_diff = ref_uw - loc_uw
-    sim_phase_centered = sim_diff - np.mean(sim_diff)
+    # Do NOT center per-curve: the experimental overlay (real_curve_centered,
+    # from utils.process_experimental_data) preserves its absolute phase level,
+    # so the simulated curve must too or the two would be plotted with a
+    # constant vertical offset even for a perfect fit.
+    sim_phase_centered = sim_diff
 
     plt.figure(figsize=(10,6))
     plt.plot(freqs/1e6, real_curve_centered, 'b-', label='Real Data')
@@ -255,7 +259,8 @@ def verify_curve(k_val, freqs, real_curve_centered, save_path, ref_name="Unknown
         ref_loc_uw = np.rad2deg(np.unwrap(np.deg2rad(ref_loc)))
         ref_ref_uw = np.rad2deg(np.unwrap(np.deg2rad(ref_ref)))
         ref_diff = ref_ref_uw - ref_loc_uw
-        ref_phase_centered = ref_diff - np.mean(ref_diff)
+        # Not centered, for the same reason as sim_phase_centered above.
+        ref_phase_centered = ref_diff
         
         plt.plot(freqs/1e6, ref_phase_centered, 'g-.', label=f'Ref Trend (K={k_ref:.1e})')
 
